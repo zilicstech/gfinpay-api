@@ -17,6 +17,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import com.fintech.platform.web.PublicAppUrl;
 
 @Configuration
 @EnableWebSecurity
@@ -55,10 +56,7 @@ public class SecurityConfig {
         if (allowAllOrigins) {
             config.setAllowedOriginPatterns(List.of("*"));
         } else {
-            List<String> allowedOrigins = allowedOriginsRaw.isBlank()
-                    ? List.of()
-                    : List.of(allowedOriginsRaw.split("\\s*,\\s*"));
-            config.setAllowedOrigins(allowedOrigins);
+            config.setAllowedOrigins(PublicAppUrl.corsOrigins(allowedOriginsRaw));
         }
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));

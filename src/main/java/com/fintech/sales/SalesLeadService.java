@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fintech.platform.PlatformServiceGate;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiException;
+import com.fintech.platform.web.PublicAppUrl;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -84,7 +85,7 @@ public class SalesLeadService {
         this.snapshot = snapshot;
         this.access = access;
         this.customers = customers;
-        this.publicAppUrl = publicAppUrl.replaceAll("/$", "");
+        this.publicAppUrl = PublicAppUrl.canonicalOrigin(publicAppUrl);
     }
 
     public List<Map<String, Object>> list(AuthPrincipal me, UUID retailerUserId) {
