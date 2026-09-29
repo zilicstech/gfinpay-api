@@ -48,6 +48,11 @@ public class SalesController {
         return ApiResponse.ok(sales.checkPaysprintUtmStatus(me, id));
     }
 
+    @GetMapping("/api/v1/public/apply/{token}")
+    public ApiResponse<Map<String, Object>> publicStatus(@PathVariable String token) {
+        return ApiResponse.ok(sales.publicStatus(token));
+    }
+
     @PostMapping("/api/v1/public/apply/{token}/start")
     public ApiResponse<Map<String, String>> start(@PathVariable String token) {
         return ApiResponse.ok(sales.start(token));

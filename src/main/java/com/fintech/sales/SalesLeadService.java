@@ -166,6 +166,18 @@ public class SalesLeadService {
         return get(me, id);
     }
 
+    public Map<String, Object> publicStatus(String linkToken) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT state FROM sales_leads WHERE link_token = ?", linkToken);
+        if (rows.isEmpty()) {
+            throw ApiException.of(HttpStatus.NOT_FOUND, "LINK_NOT_FOUND", "This link is not valid");
+        }
+        String state = String.valueOf(rows.get(0).get("state"));
+        boolean closed = "REJECTED".equals(state) || "EXPIRED".equals(state)
+                || "CONVERTED".equals(state) || "ACTIVATED".equals(state);
+        return Map.of("state", state, "active", !closed);
+    }
+
     @Transactional
     public Map<String, String> start(String linkToken) {
         List<Map<String, Object>> rows = jdbc.queryForList(SELECT + " WHERE l.link_token = ?", linkToken);
