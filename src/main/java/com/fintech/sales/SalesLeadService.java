@@ -32,6 +32,7 @@ public class SalesLeadService {
     private static final String SELECT = """
             SELECT l.id, l.customer_id, l.catalog_item_id, l.retailer_user_id, l.state, l.budget,
                    l.provider_refid, l.link_token, l.payment_link_url, l.link_opened_at,
+                   l.partner_status, l.partner_status_at, l.partner_user_id,
                    l.created_at, l.updated_at, l.sale_type, l.sale_provider,
                    l.distributor_user_id, l.hub_id,
                    c.full_name AS customer_name, c.mobile AS customer_mobile, c.email AS customer_email,

@@ -61,6 +61,6 @@ public class FdProviderReconActivator {
             activated++;
         }
         log.info("FD_RECON_ACTIVATE provider={} eligible={} activated={}", provider, leads.size(), activated);
-        return new FdReconOutcome(leads.size(), activated, "PROVIDER_DEFAULT");
+        return new FdReconOutcome(leads.size(), activated, activated, 0, 0, "PROVIDER_DEFAULT", List.of(), List.of());
     }
 }

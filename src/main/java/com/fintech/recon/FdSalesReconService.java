@@ -1,5 +1,7 @@
 package com.fintech.recon;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fintech.identity.AdminAccess;
 import com.fintech.identity.AdminPlatformService;
 import com.fintech.platform.web.ApiException;
@@ -11,7 +13,6 @@ import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -31,13 +32,16 @@ public class FdSalesReconService {
     private final JdbcTemplate jdbc;
     private final AdminAccess access;
     private final AdminPlatformService admin;
+    private final ObjectMapper objectMapper;
 
     public FdSalesReconService(FdReconReportFactory factory, JdbcTemplate jdbc,
-                               AdminAccess access, AdminPlatformService admin) {
+                               AdminAccess access, AdminPlatformService admin,
+                               ObjectMapper objectMapper) {
         this.factory = factory;
         this.jdbc = jdbc;
         this.access = access;
         this.admin = admin;
+        this.objectMapper = objectMapper;
     }
 
     @Transactional
@@ -50,55 +54,88 @@ public class FdSalesReconService {
         LocalDate businessDate = LocalDate.now(IST);
         String fileUri = "upload://" + provider + "/" + safeName(file.getOriginalFilename());
         UUID batchId = persistBatch(provider, businessDate, fileUri, outcome);
-        log.info("FD_RECON provider={} parser={} file={} eligible={} activated={}",
-                provider, outcome.parser(), file.getOriginalFilename(), outcome.eligible(), outcome.activated());
+        log.info("FD_RECON provider={} parser={} file={} rows={} matched={} activated={} mismatches={}",
+                provider, outcome.parser(), file.getOriginalFilename(), outcome.eligible(), outcome.matched(),
+                outcome.activated(), outcome.unmatched());
         Map<String, Object> batch = admin.getRecon(batchId);
         batch.put("activated_count", outcome.activated());
+        batch.put("matched_count", outcome.matched());
         batch.put("eligible_count", outcome.eligible());
         batch.put("parser", outcome.parser());
         return batch;
     }
 
-    private UUID persistBatch(String provider, LocalDate businessDate, String fileUri, FdReconOutcome outcome) {
-        List<Map<String, Object>> existing = jdbc.queryForList("""
-                SELECT id FROM recon_batches WHERE provider = ? AND business_date = ?
-                """, provider, java.sql.Date.valueOf(businessDate));
-        int total = outcome.eligible();
-        int matched = outcome.activated();
-        if (!existing.isEmpty()) {
-            UUID id = (UUID) existing.get(0).get("id");
-            jdbc.update("""
-                    UPDATE recon_batches
-                       SET mis_file_uri = ?, total_rows = ?, matched_rows = ?, status = 'COMPLETED',
-                           finished_at = now()
-                     WHERE id = ?
-                    """, fileUri, total, matched, id);
-            return id;
+    @Transactional
+    public void deleteBatch(UUID id) {
+        access.requireSuperAdmin();
+        int n = jdbc.update("DELETE FROM recon_batches WHERE id = ?", id);
+        if (n == 0) {
+            throw ApiException.of(HttpStatus.NOT_FOUND, "RECON_NOT_FOUND", "Recon batch not found");
         }
+    }
+
+    private UUID persistBatch(String provider, LocalDate businessDate, String fileUri, FdReconOutcome outcome) {
+        int total = outcome.eligible();
+        int matched = outcome.matched();
+        int unidentified = outcome.unidentified();
+        String status = outcome.mismatches().isEmpty() ? "COMPLETED" : "COMPLETED_WITH_MISMATCHES";
+        String statusCountsJson = toJson(outcome.statusCounts());
         UUID id = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO recon_batches
+                    (id, provider, business_date, mis_file_uri, total_rows, matched_rows, status,
+                     unidentified_rows, status_counts, finished_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, now())
+                """, id, provider, java.sql.Date.valueOf(businessDate), fileUri, total, matched, status,
+                unidentified, statusCountsJson);
+        persistRows(id, outcome);
+        persistMismatches(id, outcome);
+        return id;
+    }
+
+    private void persistRows(UUID batchId, FdReconOutcome outcome) {
+        jdbc.update("DELETE FROM recon_rows WHERE batch_id = ?", batchId);
+        for (FdReconRow row : outcome.rows()) {
+            jdbc.update("""
+                    INSERT INTO recon_rows
+                        (batch_id, customer_mobile, customer_name, lead_id,
+                         retailer_user_id, distributor_user_id, hub_id,
+                         retailer_label, distributor_label, hub_label,
+                         identified, current_status, payload)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+                    """,
+                    batchId,
+                    row.customerMobile(),
+                    row.customerName(),
+                    row.leadId(),
+                    row.retailerUserId(),
+                    row.distributorUserId(),
+                    row.hubId(),
+                    row.retailerLabel(),
+                    row.distributorLabel(),
+                    row.hubLabel(),
+                    row.identified(),
+                    row.currentStatus(),
+                    toJson(row.payload()));
+        }
+    }
+
+    private void persistMismatches(UUID batchId, FdReconOutcome outcome) {
+        jdbc.update("DELETE FROM recon_mismatches WHERE batch_id = ?", batchId);
+        for (FdReconMismatch mm : outcome.mismatches()) {
+            jdbc.update("""
+                    INSERT INTO recon_mismatches (batch_id, mismatch_type, partner_ref, details)
+                    VALUES (?, ?, ?, ?::jsonb)
+                    """, batchId, mm.type(), mm.partnerRef(), toJson(mm.details()));
+        }
+    }
+
+    private String toJson(Object value) {
         try {
-            jdbc.update("""
-                    INSERT INTO recon_batches
-                        (id, provider, business_date, mis_file_uri, total_rows, matched_rows, status, finished_at)
-                    VALUES (?, ?, ?, ?, ?, ?, 'COMPLETED', now())
-                    """, id, provider, java.sql.Date.valueOf(businessDate), fileUri, total, matched);
-            return id;
-        } catch (DuplicateKeyException e) {
-            existing = jdbc.queryForList("""
-                    SELECT id FROM recon_batches WHERE provider = ? AND business_date = ?
-                    """, provider, java.sql.Date.valueOf(businessDate));
-            if (existing.isEmpty()) {
-                throw ApiException.of(HttpStatus.CONFLICT, "RECON_BATCH_CONFLICT",
-                        "Could not store recon batch for this provider and date");
-            }
-            UUID existingId = (UUID) existing.get(0).get("id");
-            jdbc.update("""
-                    UPDATE recon_batches
-                       SET mis_file_uri = ?, total_rows = ?, matched_rows = ?, status = 'COMPLETED',
-                           finished_at = now()
-                     WHERE id = ?
-                    """, fileUri, total, matched, existingId);
-            return existingId;
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException e) {
+            throw ApiException.of(HttpStatus.INTERNAL_SERVER_ERROR, "RECON_JSON",
+                    "Could not serialize recon payload");
         }
     }
 

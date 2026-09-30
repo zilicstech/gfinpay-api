@@ -3,7 +3,9 @@ package com.fintech.identity;
 import com.fintech.ledger.LedgerService;
 import com.fintech.ledger.TransactionService;
 import com.fintech.ledger.WalletService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fintech.platform.web.ApiException;
+import com.fintech.recon.ReconJson;
 import com.fintech.reports.DashboardSnapshotService;
 import java.math.BigDecimal;
 import java.sql.Date;
@@ -36,10 +38,12 @@ public class AdminPlatformService {
     private final TransactionService transactionService;
     private final AdminAccess access;
     private final DashboardSnapshotService snapshot;
+    private final ObjectMapper objectMapper;
 
     public AdminPlatformService(JdbcTemplate jdbc, PasswordEncoder passwordEncoder, WalletService walletService,
                                 LedgerService ledgerService, TransactionService transactionService,
-                                AdminAccess access, DashboardSnapshotService snapshot) {
+                                AdminAccess access, DashboardSnapshotService snapshot,
+                                ObjectMapper objectMapper) {
         this.jdbc = jdbc;
         this.passwordEncoder = passwordEncoder;
         this.walletService = walletService;
@@ -47,6 +51,7 @@ public class AdminPlatformService {
         this.transactionService = transactionService;
         this.access = access;
         this.snapshot = snapshot;
+        this.objectMapper = objectMapper;
     }
 
     public List<Map<String, Object>> listHubs() {
@@ -710,24 +715,40 @@ public class AdminPlatformService {
         access.requireSuperAdmin();
         return jdbc.queryForList("""
                 SELECT id, provider, business_date, mis_file_uri, total_rows, matched_rows,
-                       status, started_at, finished_at
+                       unidentified_rows, status_counts, status, started_at, finished_at
                   FROM recon_batches
                  ORDER BY started_at DESC
-                """);
+                """).stream().map(this::hydrateBatchJson).toList();
     }
 
     public Map<String, Object> getRecon(UUID id) {
         access.requireSuperAdmin();
         Map<String, Object> batch = one("""
                 SELECT id, provider, business_date, mis_file_uri, total_rows, matched_rows,
-                       status, started_at, finished_at
+                       unidentified_rows, status_counts, status, started_at, finished_at
                   FROM recon_batches WHERE id = ?
                 """, id, "RECON_NOT_FOUND", "Recon batch not found");
-        batch.put("mismatches", jdbc.queryForList("""
+        hydrateBatchJson(batch);
+        List<Map<String, Object>> mismatches = jdbc.queryForList("""
                 SELECT id, mismatch_type, transaction_id, partner_ref, details, resolution, resolved_at, created_at
                   FROM recon_mismatches WHERE batch_id = ? ORDER BY id
-                """, id));
-        batch.put("activated_count", batch.get("matched_rows"));
+                """, id);
+        for (Map<String, Object> row : mismatches) {
+            row.put("details", ReconJson.asMap(row.get("details"), objectMapper));
+        }
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT id, customer_mobile, customer_name, lead_id,
+                       retailer_user_id, distributor_user_id, hub_id,
+                       retailer_label, distributor_label, hub_label,
+                       identified, current_status, payload, created_at
+                  FROM recon_rows WHERE batch_id = ? ORDER BY created_at, id
+                """, id);
+        for (Map<String, Object> row : rows) {
+            row.put("payload", ReconJson.asMap(row.get("payload"), objectMapper));
+        }
+        batch.put("mismatches", mismatches);
+        batch.put("rows", rows);
+        batch.put("matched_count", batch.get("matched_rows"));
         batch.put("eligible_count", batch.get("total_rows"));
         return batch;
     }
@@ -738,8 +759,9 @@ public class AdminPlatformService {
         UUID id = UUID.randomUUID();
         try {
             jdbc.update("""
-                    INSERT INTO recon_batches (id, provider, business_date, mis_file_uri, total_rows, matched_rows, status, finished_at)
-                    VALUES (?, ?, ?::date, ?, 0, 0, 'COMPLETED', now())
+                    INSERT INTO recon_batches (id, provider, business_date, mis_file_uri, total_rows, matched_rows,
+                                               unidentified_rows, status_counts, status, finished_at)
+                    VALUES (?, ?, ?::date, ?, 0, 0, 0, '{}'::jsonb, 'COMPLETED', now())
                     """, id, provider, businessDate, "manual://" + provider + "/" + businessDate);
         } catch (DuplicateKeyException e) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "RECON_EXISTS",
@@ -991,5 +1013,10 @@ public class AdminPlatformService {
 
     private static String mask(String mobile) {
         return mobile == null || mobile.length() < 4 ? "****" : "******" + mobile.substring(mobile.length() - 4);
+    }
+
+    private Map<String, Object> hydrateBatchJson(Map<String, Object> batch) {
+        batch.put("status_counts", ReconJson.asMap(batch.get("status_counts"), objectMapper));
+        return batch;
     }
 }
