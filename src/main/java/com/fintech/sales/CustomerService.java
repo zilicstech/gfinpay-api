@@ -103,7 +103,8 @@ public class CustomerService {
     }
 
     @Transactional
-    public Map<String, Object> create(AuthPrincipal me, String name, String mobile, String city, String state, String pincode) {
+    public Map<String, Object> create(AuthPrincipal me, String name, String mobile, String email,
+                                      String city, String state, String pincode) {
         Creator creator = creator(me);
         String digits = mobileDigits(mobile);
         String trimmed = requiredName(name);
@@ -115,9 +116,10 @@ public class CustomerService {
         try {
             jdbc.update("""
                     INSERT INTO customers
-                        (id, retailer_user_id, full_name, mobile, city, state, pincode, created_by_role, created_by_code)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, id, me.userId(), trimmed, digits, place, region, pin, creator.role(), creator.code());
+                        (id, retailer_user_id, full_name, mobile, email, city, state, pincode, created_by_role, created_by_code)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, id, me.userId(), trimmed, digits, optionalEmail(email), place, region, pin,
+                    creator.role(), creator.code());
         } catch (DuplicateKeyException e) {
             throw customerAlreadyExists();
         }
@@ -150,7 +152,8 @@ public class CustomerService {
     }
 
     @Transactional
-    public Map<String, Object> update(AuthPrincipal me, UUID id, String name, String mobile, String city, String state, String pincode) {
+    public Map<String, Object> update(AuthPrincipal me, UUID id, String name, String mobile, String email,
+                                      String city, String state, String pincode) {
         get(me, id);
         String digits = mobileDigits(mobile);
         assertCustomerMobileAvailable(digits, id);
@@ -161,6 +164,7 @@ public class CustomerService {
         java.util.ArrayList<Object> args = new java.util.ArrayList<>();
         args.add(trimmed);
         args.add(digits);
+        args.add(optionalEmail(email));
         args.add(place);
         args.add(region);
         args.add(pin);
@@ -168,7 +172,7 @@ public class CustomerService {
         try {
             int n = jdbc.update("""
                     UPDATE customers
-                       SET full_name = ?, mobile = ?, city = ?, state = ?, pincode = ?, updated_at = now()
+                       SET full_name = ?, mobile = ?, email = ?, city = ?, state = ?, pincode = ?, updated_at = now()
                      WHERE %s
                     """.formatted(where), args.toArray());
             if (n == 0) {
@@ -316,5 +320,10 @@ public class CustomerService {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_PINCODE", "Enter a 6-digit pincode");
         }
         return digits;
+    }
+
+    private static String optionalEmail(String email) {
+        String trimmed = email == null ? "" : email.trim().toLowerCase(java.util.Locale.ROOT);
+        return trimmed.isBlank() ? null : trimmed;
     }
 }

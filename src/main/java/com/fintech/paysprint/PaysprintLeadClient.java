@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fintech.platform.web.ApiException;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -14,6 +16,8 @@ import org.springframework.web.client.RestClientResponseException;
 
 @Component
 public class PaysprintLeadClient {
+
+    private static final Logger log = LoggerFactory.getLogger(PaysprintLeadClient.class);
 
     public record Journey(String url, String encdata) {}
 
@@ -52,17 +56,24 @@ public class PaysprintLeadClient {
     }
 
     private JsonNode post(String path, Map<String, String> body) {
+        String url = props.baseUrl() + path;
+        if (log.isDebugEnabled()) {
+            log.debug("PAYSPRINT_API request POST {} body={}", url, mapper.valueToTree(body));
+        }
         String raw;
         try {
             raw = restClient.post()
-                    .uri(props.baseUrl() + path)
+                    .uri(url)
                     .contentType(MediaType.APPLICATION_JSON)
                     .header("Token", tokens.create())
                     .header("Authorisedkey", props.authorisedKey())
                     .body(body)
                     .retrieve()
                     .body(String.class);
+            log.debug("PAYSPRINT_API response POST {} status=200 body={}", url, raw);
         } catch (RestClientResponseException e) {
+            log.debug("PAYSPRINT_API response POST {} status={} body={}", url, e.getStatusCode().value(),
+                    e.getResponseBodyAsString());
             throw ApiException.of(HttpStatus.BAD_GATEWAY, "PAYSPRINT_LEAD_ERROR", message(e));
         }
         try {

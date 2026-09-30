@@ -3,6 +3,7 @@ package com.fintech.sales;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiResponse;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
@@ -29,6 +30,7 @@ public class CustomerController {
     public record CustomerRequest(
             @NotBlank String fullName,
             @NotBlank @Pattern(regexp = "\\d{10}") String mobile,
+            @Email String email,
             @NotBlank String city,
             @NotBlank String state,
             @NotBlank @Pattern(regexp = "\\d{6}") String pincode) {}
@@ -36,6 +38,7 @@ public class CustomerController {
     public record UpdateRequest(
             @NotBlank String fullName,
             @NotBlank @Pattern(regexp = "\\d{10}") String mobile,
+            @Email String email,
             @NotBlank String city,
             @NotBlank String state,
             @NotBlank @Pattern(regexp = "\\d{6}") String pincode) {}
@@ -74,7 +77,7 @@ public class CustomerController {
     @PreAuthorize("hasAuthority('sales.create')")
     public ApiResponse<Map<String, Object>> create(@AuthenticationPrincipal AuthPrincipal me,
                                                    @Valid @RequestBody CustomerRequest req) {
-        return ApiResponse.ok(customers.create(me, req.fullName(), req.mobile(), req.city(), req.state(), req.pincode()));
+        return ApiResponse.ok(customers.create(me, req.fullName(), req.mobile(), req.email(), req.city(), req.state(), req.pincode()));
     }
 
     @GetMapping("/{id}")
@@ -88,7 +91,7 @@ public class CustomerController {
     public ApiResponse<Map<String, Object>> update(@AuthenticationPrincipal AuthPrincipal me,
                                                    @PathVariable UUID id,
                                                    @Valid @RequestBody UpdateRequest req) {
-        return ApiResponse.ok(customers.update(me, id, req.fullName(), req.mobile(), req.city(), req.state(), req.pincode()));
+        return ApiResponse.ok(customers.update(me, id, req.fullName(), req.mobile(), req.email(), req.city(), req.state(), req.pincode()));
     }
 
     @PostMapping("/{id}/ekyc")

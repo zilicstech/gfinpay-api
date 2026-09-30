@@ -128,6 +128,7 @@ public class SalesLeadService {
         requireCatalogItemService(catalogItemId);
         eligibility.requireEligible(me, customerId, catalogItemId, budget);
         Map<String, Object> customer = customers.get(me, customerId);
+        requireEmailForPaysprintLead(catalogItemId, customer);
         UUID outletUserId = (UUID) customer.get("retailer_user_id");
         List<Map<String, Object>> open = jdbc.queryForList("""
                 SELECT id FROM sales_leads
@@ -301,6 +302,15 @@ public class SalesLeadService {
         }
         data.fields().forEachRemaining(entry -> out.put(entry.getKey(), entry.getValue().asText("")));
         return out;
+    }
+
+    private void requireEmailForPaysprintLead(UUID catalogItemId, Map<String, Object> customer) {
+        String rail = jdbc.queryForObject("SELECT rail FROM catalog_items WHERE id = ?", String.class, catalogItemId);
+        Object email = customer.get("email");
+        if ("PAYSPRINT_LEAD".equals(rail) && (email == null || String.valueOf(email).isBlank())) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "CUSTOMER_EMAIL_REQUIRED",
+                    "Add the customer's email before generating this link");
+        }
     }
 
     private void requireCatalogItemService(UUID catalogItemId) {
