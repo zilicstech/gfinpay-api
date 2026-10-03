@@ -47,4 +47,28 @@ class FdReconRowTest {
         assertEquals("Mumbai", row.hubLabel());
         assertEquals(leadId, row.leadId());
     }
+
+    @Test
+    void fromMatchExternalKeepsVendorPartyIds() {
+        java.util.UUID affiliateId = java.util.UUID.randomUUID();
+        java.util.UUID vendorId = java.util.UUID.randomUUID();
+        FdMisRow mis = new FdMisRow("ZET", "SBM", "SBM", "7899078990", "Rohit",
+                "u1", null, "ACTIVATED", "virtual_card_activated_time", null,
+                FdPartnerLifecycle.ACTIVATED, Map.of());
+        FdReconRow row = FdReconRow.fromMatch(mis, Map.of(
+                "id", java.util.UUID.randomUUID(),
+                "sale_channel", "EXTERNAL",
+                "retailer_user_id", affiliateId,
+                "distributor_user_id", vendorId,
+                "retailer_code", "RAHUL",
+                "retailer_name", "Rahul",
+                "distributor_code", "GFINR6RYUE",
+                "distributor_name", "Bhima Jwellers",
+                "hub_name", "Delhi Hub",
+                "customer_name", "Rohit"));
+        assertTrue(row.identified());
+        assertEquals(affiliateId, row.retailerUserId());
+        assertEquals(vendorId, row.distributorUserId());
+        assertEquals("RAHUL · Rahul", row.retailerLabel());
+    }
 }

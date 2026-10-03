@@ -40,6 +40,12 @@ public class AdminAccess {
         }
     }
 
+    public void requirePlatformStaff() {
+        if (!me().platformStaff()) {
+            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
+        }
+    }
+
     /** null = unrestricted (super admin); otherwise assigned hub ids. */
     public List<UUID> hubIdsOrNull() {
         if (superAdmin()) {

@@ -33,8 +33,39 @@ public record FdReconRow(
         String status = currentStatus(row);
         Map<String, Object> payload = payload(row, true, leadId, retailerId, retailerLabel,
                 distributorId, distributorLabel, hubId, hubLabel, customerName);
+        Object channel = lead.get("sale_channel");
+        if (channel != null) {
+            payload.put("sale_channel", String.valueOf(channel));
+        }
         return new FdReconRow(row.phone(), customerName, leadId, retailerId, distributorId, hubId,
                 retailerLabel, distributorLabel, hubLabel, true, status, payload);
+    }
+
+    public static FdReconRow fromVendorLead(FdMisRow row, com.fintech.vendor.VendorService.OptionalVendorLead lead) {
+        String status = currentStatus(row);
+        String vendorLabel = lead.vendorCode() + " · " + lead.vendorName();
+        String employeeLabel = lead.employeeCode() + " · " + lead.employeeName();
+        String customerName = first(lead.customerName(), row.fullName());
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("source", "VENDOR_AFFILIATE");
+        payload.put("sale_channel", "EXTERNAL");
+        payload.put("vendor_code", lead.vendorCode());
+        payload.put("employee_code", lead.employeeCode());
+        if (lead.employeeGfinCode() != null) {
+            payload.put("employee_gfin_code", lead.employeeGfinCode());
+        }
+        if (lead.trackingRef() != null) {
+            payload.put("tracking_ref", lead.trackingRef().toString());
+        }
+        if (lead.customerId() != null) {
+            payload.put("customer_id", lead.customerId().toString());
+        }
+        payload.put("partner_status", row.partnerStatus());
+        if (row.raw() != null) {
+            payload.put("mis", row.raw());
+        }
+        return new FdReconRow(row.phone(), customerName, null, lead.affiliateId(), lead.vendorId(), lead.hubId(),
+                employeeLabel, vendorLabel, UNIDENTIFIED, true, status, payload);
     }
 
     public static FdReconRow unidentified(FdMisRow row) {

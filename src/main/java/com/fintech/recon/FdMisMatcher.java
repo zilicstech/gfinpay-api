@@ -15,6 +15,16 @@ import org.springframework.stereotype.Component;
 @Component
 public class FdMisMatcher {
 
+    private static final String LEAD_SELECT = """
+            SELECT l.id, l.state, l.sale_channel, l.retailer_user_id, l.budget, l.provider_refid, l.customer_id,
+                   l.distributor_user_id, l.hub_id,
+                   l.distributor_code, l.distributor_name, l.retailer_code, l.retailer_name,
+                   l.hub_name, l.product_code, l.sale_provider, l.sale_provider AS provider, l.sale_type,
+                   c.mobile AS customer_mobile, c.full_name AS customer_name
+              FROM sales_leads l
+              JOIN customers c ON c.id = l.customer_id
+            """;
+
     private final JdbcTemplate jdbc;
 
     public FdMisMatcher(JdbcTemplate jdbc) {
@@ -22,30 +32,23 @@ public class FdMisMatcher {
     }
 
     public Optional<Map<String, Object>> matchLead(FdMisRow row) {
+        if (row.matchRef() != null && !row.matchRef().isBlank()) {
+            Optional<Map<String, Object>> byRef = matchByProviderRef(row);
+            if (byRef.isPresent()) {
+                return byRef;
+            }
+        }
         List<Map<String, Object>> customers = jdbc.queryForList(
                 "SELECT id FROM customers WHERE mobile = ? LIMIT 1", row.phone());
         if (customers.isEmpty()) {
             return Optional.empty();
         }
         UUID customerId = (UUID) customers.get(0).get("id");
-        List<Map<String, Object>> leads = jdbc.queryForList("""
-                SELECT l.id, l.state, l.retailer_user_id, l.budget, l.provider_refid, l.customer_id,
-                       l.distributor_user_id, l.hub_id,
-                       i.provider, i.category_code, i.product_key, i.code AS item_code,
-                       c.mobile AS customer_mobile, c.full_name AS customer_name,
-                       r.full_name AS retailer_name, r.code AS retailer_code,
-                       d.full_name AS distributor_name, d.code AS distributor_code,
-                       h.name AS hub_name
-                  FROM sales_leads l
-                  JOIN catalog_items i ON i.id = l.catalog_item_id
-                  JOIN customers c ON c.id = l.customer_id
-                  JOIN users r ON r.id = l.retailer_user_id
-                  LEFT JOIN users d ON d.id = COALESCE(l.distributor_user_id, r.parent_id)
-                  LEFT JOIN hubs h ON h.id = COALESCE(l.hub_id, r.hub_id)
+        List<Map<String, Object>> leads = jdbc.queryForList(LEAD_SELECT + """
                  WHERE l.customer_id = ?
-                   AND i.product_key = ?
-                   AND i.category_code = 'FD_CARD'
-                   AND (l.sale_provider = 'ZET' OR i.provider = 'ZET')
+                   AND l.product_code = ?
+                   AND l.sale_type = 'FD_CARD'
+                   AND (l.sale_provider = 'ZET')
                    AND l.state <> 'EXPIRED'
                  ORDER BY l.created_at DESC
                 """, customerId, row.productKey());
@@ -60,6 +63,21 @@ public class FdMisMatcher {
                     return Optional.of(lead);
                 }
             }
+        }
+        return Optional.of(leads.get(0));
+    }
+
+    private Optional<Map<String, Object>> matchByProviderRef(FdMisRow row) {
+        String ref = row.matchRef().trim();
+        List<Map<String, Object>> leads = jdbc.queryForList(LEAD_SELECT + """
+                 WHERE (l.provider_refid = ? OR l.id::text = ?)
+                   AND l.sale_type = 'FD_CARD'
+                   AND (l.sale_provider = 'ZET')
+                   AND l.state <> 'EXPIRED'
+                 LIMIT 1
+                """, ref, ref);
+        if (leads.isEmpty()) {
+            return Optional.empty();
         }
         return Optional.of(leads.get(0));
     }
@@ -81,12 +99,12 @@ public class FdMisMatcher {
         }
         List<FdReconMismatch> out = new ArrayList<>();
         List<Map<String, Object>> openLeads = jdbc.queryForList("""
-                SELECT l.id, l.provider_refid, l.state, c.mobile, c.full_name, i.product_key
+                SELECT l.id, l.provider_refid, l.state, l.product_code, c.mobile, c.full_name
                   FROM sales_leads l
                   JOIN customers c ON c.id = l.customer_id
-                  JOIN catalog_items i ON i.id = l.catalog_item_id
-                 WHERE i.category_code = 'FD_CARD'
-                   AND (l.sale_provider = 'ZET' OR i.provider = 'ZET')
+                 WHERE l.sale_type = 'FD_CARD'
+                   AND l.sale_channel = 'INTERNAL'
+                   AND l.sale_provider = 'ZET'
                    AND l.payment_link_url IS NOT NULL
                    AND l.state IN ('LINK_CREATED', 'OPENED', 'IN_PROGRESS')
                 """);
@@ -95,7 +113,7 @@ public class FdMisMatcher {
             if (mobile.length() >= 10) {
                 mobile = mobile.substring(mobile.length() - 10);
             }
-            String productKey = String.valueOf(lead.get("product_key"));
+            String productKey = String.valueOf(lead.get("product_code"));
             if (seen.contains(productKey + ":" + mobile)) {
                 continue;
             }

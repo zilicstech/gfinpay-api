@@ -21,12 +21,15 @@ public class CustomerService {
             SELECT c.id, c.retailer_user_id, c.full_name, c.mobile, c.email, c.city, c.state, c.pincode,
                    c.employment_type, c.monthly_income, c.ekyc_status, c.ekyc_verified_at,
                    c.ovd_type, c.ovd_last4, c.created_by_role AS created_by, c.created_by_code,
-                   creator.full_name AS created_by_name,
+                   COALESCE(creator.full_name, va.employee_name) AS created_by_name,
                    c.created_at, c.updated_at,
-                   r.full_name AS retailer_name
+                   r.full_name AS retailer_name,
+                   v.full_name AS vendor_name, v.code AS vendor_code
               FROM customers c
-              JOIN users r ON r.id = c.retailer_user_id
-              LEFT JOIN users creator ON creator.code = c.created_by_code
+              LEFT JOIN users r ON r.id = c.retailer_user_id
+              LEFT JOIN users creator ON creator.code = c.created_by_code AND c.created_by_role <> 'VENDOR'
+              LEFT JOIN vendor_affiliates va ON va.gfin_code = c.created_by_code AND c.created_by_role = 'VENDOR'
+              LEFT JOIN vendors v ON v.id = c.vendor_id
             """;
 
     private final JdbcTemplate jdbc;
@@ -90,15 +93,19 @@ public class CustomerService {
                  WHERE l.customer_id = ?
                  ORDER BY l.created_at DESC
                 """, id));
-        customer.put("transactions", jdbc.queryForList("""
-                SELECT t.id, t.txn_type::text AS txn_type, t.state::text AS state, t.amount, t.created_at
-                  FROM transactions t
-                  JOIN dmt_senders s ON s.id = t.dmt_sender_id
-                 WHERE s.mobile = ?
-                   AND t.agent_user_id = ?
-                 ORDER BY t.created_at DESC
-                 LIMIT 100
-                """, customer.get("mobile"), customer.get("retailer_user_id")));
+        if (customer.get("retailer_user_id") != null) {
+            customer.put("transactions", jdbc.queryForList("""
+                    SELECT t.id, t.txn_type::text AS txn_type, t.state::text AS state, t.amount, t.created_at
+                      FROM transactions t
+                      JOIN dmt_senders s ON s.id = t.dmt_sender_id
+                     WHERE s.mobile = ?
+                       AND t.agent_user_id = ?
+                     ORDER BY t.created_at DESC
+                     LIMIT 100
+                    """, customer.get("mobile"), customer.get("retailer_user_id")));
+        } else {
+            customer.put("transactions", List.of());
+        }
         return customer;
     }
 
@@ -222,6 +229,26 @@ public class CustomerService {
         return get(me, id);
     }
 
+    private void scopeAdminHubs(StringBuilder sql, java.util.List<Object> args) {
+        List<UUID> hubs = access.hubIdsOrNull();
+        if (hubs == null) {
+            return;
+        }
+        if (hubs.isEmpty()) {
+            sql.append(" AND FALSE ");
+            return;
+        }
+        sql.append(" AND COALESCE(r.hub_id, v.hub_id) IN (");
+        for (int i = 0; i < hubs.size(); i++) {
+            if (i > 0) {
+                sql.append(", ");
+            }
+            sql.append("?");
+            args.add(hubs.get(i));
+        }
+        sql.append(") ");
+    }
+
     private void scope(AuthPrincipal me, StringBuilder sql, java.util.List<Object> args) {
         if (me == null) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
@@ -239,7 +266,7 @@ public class CustomerService {
             case "SUPER_ADMIN" -> {
                 // network-wide
             }
-            case "ADMIN" -> access.appendHubFilter(sql, args, "r.hub_id");
+            case "ADMIN" -> scopeAdminHubs(sql, args);
             default -> throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
         }
     }

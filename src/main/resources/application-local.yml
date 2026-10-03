@@ -1,6 +1,14 @@
 server:
   port: 8090
 
+# Local profile wins over APP_* in .env so minted /v and /a links use the dev UI, not production.
+app:
+  self-base-url: http://localhost:8090
+  public-app-url: http://localhost:3001
+  cors:
+    allow-all-origins: true
+    allowed-origins: http://localhost:3001
+
 logging:
   level:
     com.fintech: INFO

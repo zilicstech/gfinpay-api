@@ -33,12 +33,45 @@ public record FdReconOutcome(
         return n;
     }
 
-    public Map<String, Integer> statusCounts() {
-        Map<String, Integer> counts = new LinkedHashMap<>();
+    public Map<String, Object> statusCounts() {
+        Map<String, int[]> tallies = new LinkedHashMap<>();
         for (FdReconRow row : rows) {
             String status = row.currentStatus() == null ? "UNKNOWN" : row.currentStatus();
-            counts.merge(status, 1, Integer::sum);
+            int[] bucket = tallies.computeIfAbsent(status, k -> new int[3]);
+            bucket[0]++;
+            String channel = saleChannel(row);
+            if ("INTERNAL".equals(channel)) {
+                bucket[1]++;
+            } else if ("EXTERNAL".equals(channel)) {
+                bucket[2]++;
+            }
+        }
+        Map<String, Object> counts = new LinkedHashMap<>();
+        for (Map.Entry<String, int[]> e : tallies.entrySet()) {
+            int[] b = e.getValue();
+            counts.put(e.getKey(), Map.of(
+                    "total", b[0],
+                    "internal", b[1],
+                    "vendor", b[2]));
         }
         return counts;
+    }
+
+    private static String saleChannel(FdReconRow row) {
+        if (!row.identified()) {
+            return null;
+        }
+        Map<String, Object> payload = row.payload();
+        if (payload == null) {
+            return null;
+        }
+        Object channel = payload.get("sale_channel");
+        if (channel != null && !String.valueOf(channel).isBlank()) {
+            return String.valueOf(channel);
+        }
+        if ("VENDOR_AFFILIATE".equals(String.valueOf(payload.get("source")))) {
+            return "EXTERNAL";
+        }
+        return null;
     }
 }

@@ -333,7 +333,14 @@ public class AdminPlatformService {
     private boolean gfinCodeAvailable(String code) {
         Integer hubTaken = jdbc.queryForObject("SELECT COUNT(*)::int FROM hubs WHERE code = ?", Integer.class, code);
         Integer userTaken = jdbc.queryForObject("SELECT COUNT(*)::int FROM users WHERE code = ?", Integer.class, code);
-        return (hubTaken == null || hubTaken == 0) && (userTaken == null || userTaken == 0);
+        Integer vendorTaken = jdbc.queryForObject(
+                "SELECT COUNT(*)::int FROM vendors WHERE code = ?", Integer.class, code);
+        Integer affiliateTaken = jdbc.queryForObject(
+                "SELECT COUNT(*)::int FROM vendor_affiliates WHERE gfin_code = ?", Integer.class, code);
+        return (hubTaken == null || hubTaken == 0)
+                && (userTaken == null || userTaken == 0)
+                && (vendorTaken == null || vendorTaken == 0)
+                && (affiliateTaken == null || affiliateTaken == 0);
     }
 
     @Transactional

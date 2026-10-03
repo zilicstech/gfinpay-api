@@ -29,9 +29,10 @@ public class SalesController {
     @GetMapping("/api/v1/sales")
     @PreAuthorize("hasAuthority('sales.view')")
     public ApiResponse<List<Map<String, Object>>> list(@AuthenticationPrincipal AuthPrincipal me,
-                                                       @RequestParam(required = false) UUID retailerId) {
+                                                       @RequestParam(required = false) UUID retailerId,
+                                                       @RequestParam(required = false) String channel) {
         platformServices.requireLeadSalesEnabled();
-        return ApiResponse.ok(sales.list(me, retailerId));
+        return ApiResponse.ok(sales.list(me, retailerId, channel));
     }
 
     @GetMapping("/api/v1/sales/{id}")

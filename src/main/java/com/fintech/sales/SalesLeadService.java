@@ -29,25 +29,36 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class SalesLeadService {
 
-    private static final String SELECT = """
+    private static final String LIST_SELECT = """
             SELECT l.id, l.customer_id, l.catalog_item_id, l.retailer_user_id, l.state, l.budget,
                    l.provider_refid, l.link_token, l.payment_link_url, l.link_opened_at,
                    l.partner_status, l.partner_status_at, l.partner_user_id,
-                   l.created_at, l.updated_at, l.sale_type, l.sale_provider,
+                   l.created_at, l.updated_at, l.sale_type, l.sale_provider, l.sale_channel,
                    l.distributor_user_id, l.hub_id,
+                   l.distributor_code, l.distributor_name, l.retailer_code, l.retailer_name,
+                   l.hub_name, l.product_code,
+                   l.sale_type AS category_code
+              FROM sales_leads l
+             WHERE 1=1
+            """;
+
+    private static final String DETAIL_SELECT = """
+            SELECT l.id, l.customer_id, l.catalog_item_id, l.retailer_user_id, l.state, l.budget,
+                   l.provider_refid, l.link_token, l.payment_link_url, l.link_opened_at,
+                   l.partner_status, l.partner_status_at, l.partner_user_id,
+                   l.created_at, l.updated_at, l.sale_type, l.sale_provider, l.sale_channel,
+                   l.distributor_user_id, l.hub_id, l.encdata,
+                   l.distributor_code, l.distributor_name, l.retailer_code, l.retailer_name,
+                   l.hub_name, l.product_code,
                    c.full_name AS customer_name, c.mobile AS customer_mobile, c.email AS customer_email,
-                   i.name AS item_name, i.code AS item_code, i.provider, i.product_key, i.rail, i.external_product, i.apply_url,
-                   cat.code AS category_code, cat.name AS category_name,
-                   r.full_name AS retailer_name, r.code AS retailer_code,
-                   d.full_name AS distributor_name, d.code AS distributor_code,
-                   h.name AS hub_name
+                   i.name AS item_name, i.code AS item_code, i.provider, i.product_key, i.rail,
+                   i.external_product, i.apply_url,
+                   cat.code AS category_code, cat.name AS category_name
               FROM sales_leads l
               JOIN customers c ON c.id = l.customer_id
               JOIN catalog_items i ON i.id = l.catalog_item_id
               JOIN catalog_categories cat ON cat.code = i.category_code
-              JOIN users r ON r.id = l.retailer_user_id
-              LEFT JOIN users d ON d.id = COALESCE(l.distributor_user_id, r.parent_id)
-              LEFT JOIN hubs h ON h.id = COALESCE(l.hub_id, r.hub_id)
+             WHERE 1=1
             """;
 
     private final JdbcTemplate jdbc;
@@ -89,16 +100,16 @@ public class SalesLeadService {
         this.publicAppUrl = PublicAppUrl.canonicalOrigin(publicAppUrl);
     }
 
-    public List<Map<String, Object>> list(AuthPrincipal me, UUID retailerUserId) {
-        StringBuilder sql = new StringBuilder(SELECT).append(" WHERE 1=1 ");
+    public List<Map<String, Object>> list(AuthPrincipal me, UUID retailerUserId, String channel) {
+        StringBuilder sql = new StringBuilder(LIST_SELECT);
         List<Object> args = new ArrayList<>();
-        scope(me, sql, args);
+        scopeList(me, sql, args);
         if (retailerUserId != null) {
             if (!me.platformStaff() && !"MASTER_DISTRIBUTOR".equals(me.userType())) {
                 throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
             }
             access.assertNetworkUser(retailerUserId);
-            sql.append(" AND l.retailer_user_id = ? ");
+            sql.append(" AND l.sale_channel = 'INTERNAL' AND l.retailer_user_id = ? ");
             args.add(retailerUserId);
         }
         sql.append(" ORDER BY l.created_at DESC LIMIT 300 ");
@@ -108,10 +119,11 @@ public class SalesLeadService {
     }
 
     public Map<String, Object> get(AuthPrincipal me, UUID id) {
-        StringBuilder sql = new StringBuilder(SELECT).append(" WHERE l.id = ? ");
+        StringBuilder sql = new StringBuilder(DETAIL_SELECT);
         List<Object> args = new ArrayList<>();
+        sql.append(" AND l.id = ? ");
         args.add(id);
-        scope(me, sql, args);
+        scopeDetail(me, sql, args);
         List<Map<String, Object>> rows = jdbc.queryForList(sql.toString(), args.toArray());
         if (rows.isEmpty()) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "LEAD_NOT_FOUND", "Sales lead not found");
@@ -134,6 +146,7 @@ public class SalesLeadService {
         List<Map<String, Object>> open = jdbc.queryForList("""
                 SELECT id FROM sales_leads
                  WHERE customer_id = ? AND catalog_item_id = ?
+                   AND sale_channel = 'INTERNAL'
                    AND state IN ('LINK_CREATED', 'OPENED', 'IN_PROGRESS')
                 """, customerId, catalogItemId);
         if (!open.isEmpty()) {
@@ -145,20 +158,28 @@ public class SalesLeadService {
         String refid = id.toString();
         String link = publicAppUrl + "/apply/" + token;
         SaleNetworkSnapshot.Attribution attr = snapshot.forLead(catalogItemId, outletUserId);
+        Map<String, Object> snap = snapshotParties(catalogItemId, outletUserId, attr.distributorUserId(), attr.hubId());
         try {
             jdbc.update("""
                     INSERT INTO sales_leads
                         (id, customer_id, catalog_item_id, retailer_user_id, state, provider_refid,
                          link_token, payment_link_url, budget, sale_type, sale_provider,
-                         distributor_user_id, hub_id, state_history)
-                    VALUES (?, ?, ?, ?, 'LINK_CREATED', ?, ?, ?, ?, ?, ?, ?, ?,
+                         distributor_user_id, hub_id, sale_channel,
+                         distributor_code, distributor_name, retailer_code, retailer_name, hub_name, product_code,
+                         state_history)
+                    VALUES (?, ?, ?, ?, 'LINK_CREATED', ?, ?, ?, ?, ?, ?, ?, ?, 'INTERNAL',
+                            ?, ?, ?, ?, ?, ?,
                             jsonb_build_array(jsonb_build_object('state','LINK_CREATED','at', now())))
                     """, id, customerId, catalogItemId, outletUserId, refid, token, link, budget,
-                    attr.saleType(), attr.saleProvider(), attr.distributorUserId(), attr.hubId());
+                    attr.saleType(), attr.saleProvider(), attr.distributorUserId(), attr.hubId(),
+                    snap.get("distributor_code"), snap.get("distributor_name"),
+                    snap.get("retailer_code"), snap.get("retailer_name"),
+                    snap.get("hub_name"), snap.get("product_code"));
         } catch (DataIntegrityViolationException e) {
             List<Map<String, Object>> again = jdbc.queryForList("""
                     SELECT id FROM sales_leads
                      WHERE customer_id = ? AND catalog_item_id = ?
+                       AND sale_channel = 'INTERNAL'
                        AND state IN ('LINK_CREATED', 'OPENED', 'IN_PROGRESS')
                     """, customerId, catalogItemId);
             if (!again.isEmpty()) {
@@ -183,7 +204,8 @@ public class SalesLeadService {
 
     @Transactional
     public Map<String, String> start(String linkToken) {
-        List<Map<String, Object>> rows = jdbc.queryForList(SELECT + " WHERE l.link_token = ?", linkToken);
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                DETAIL_SELECT + " AND l.link_token = ?", linkToken);
         if (rows.isEmpty()) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "LINK_NOT_FOUND", "This link is not valid");
         }
@@ -270,9 +292,9 @@ public class SalesLeadService {
     public void applyOutcome(String refid, boolean converted, String message) {
         String next = converted ? "CONVERTED" : "REJECTED";
         List<Map<String, Object>> leads = jdbc.queryForList("""
-                SELECT l.id, l.retailer_user_id, l.budget, i.provider, i.category_code
+                SELECT l.id, l.retailer_user_id, l.budget, l.sale_provider, l.sale_provider AS provider,
+                       l.sale_type, l.sale_channel
                   FROM sales_leads l
-                  JOIN catalog_items i ON i.id = l.catalog_item_id
                  WHERE l.provider_refid = ?
                    AND l.state NOT IN ('CONVERTED', 'ACTIVATED', 'REJECTED', 'EXPIRED')
                 """, refid);
@@ -285,8 +307,12 @@ public class SalesLeadService {
                  WHERE provider_refid = ?
                    AND state NOT IN ('CONVERTED', 'ACTIVATED', 'REJECTED', 'EXPIRED')
                 """, next, next, message, refid);
-        if (converted && !leads.isEmpty() && "FD_CARD".equals(String.valueOf(leads.get(0).get("category_code")))) {
-            fdCommission.payOnConversion(leads.get(0));
+        if (converted && !leads.isEmpty()) {
+            Map<String, Object> lead = leads.get(0);
+            if ("INTERNAL".equals(String.valueOf(lead.get("sale_channel")))
+                    && "FD_CARD".equals(String.valueOf(lead.get("sale_type")))) {
+                fdCommission.payOnConversion(lead);
+            }
         }
     }
 
@@ -327,24 +353,88 @@ public class SalesLeadService {
         }
     }
 
-    private void scope(AuthPrincipal me, StringBuilder sql, List<Object> args) {
+    private Map<String, Object> snapshotParties(UUID catalogItemId, UUID retailerUserId,
+                                                UUID distributorUserId, UUID hubId) {
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT r.full_name AS retailer_name, r.code AS retailer_code,
+                       COALESCE(d.full_name, pd.full_name, '—') AS distributor_name,
+                       COALESCE(d.code, pd.code, '—') AS distributor_code,
+                       COALESCE(h.name, '—') AS hub_name,
+                       COALESCE(i.product_key, 'UNKNOWN') AS product_code
+                  FROM users r
+                  LEFT JOIN users d ON d.id = ?
+                  LEFT JOIN users pd ON pd.id = r.parent_id
+                  LEFT JOIN hubs h ON h.id = ?
+                  JOIN catalog_items i ON i.id = ?
+                 WHERE r.id = ?
+                """, distributorUserId, hubId, catalogItemId, retailerUserId);
+        if (rows.isEmpty()) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_SALE_PARTIES", "Could not snapshot sale parties");
+        }
+        return rows.get(0);
+    }
+
+    private void scopeList(AuthPrincipal me, StringBuilder sql, List<Object> args) {
         if (me == null) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
         }
         switch (me.userType()) {
             case "RETAILER" -> {
-                sql.append(" AND l.retailer_user_id = ? ");
+                sql.append(" AND l.sale_channel = 'INTERNAL' AND l.retailer_user_id = ? ");
                 args.add(me.userId());
             }
             case "MASTER_DISTRIBUTOR" -> {
-                sql.append(" AND (r.parent_id = ? OR l.retailer_user_id = ?) ");
+                sql.append("""
+                         AND l.sale_channel = 'INTERNAL'
+                         AND (
+                           l.distributor_user_id = ?
+                           OR l.retailer_user_id = ?
+                           OR l.retailer_user_id IN (
+                               SELECT id FROM users WHERE parent_id = ? AND user_type = 'RETAILER'
+                           )
+                         )
+                        """);
+                args.add(me.userId());
                 args.add(me.userId());
                 args.add(me.userId());
             }
             case "SUPER_ADMIN" -> {
-                // network-wide
+                // all channels
             }
-            case "ADMIN" -> access.appendHubFilter(sql, args, "r.hub_id");
+            case "ADMIN" -> access.appendHubFilter(sql, args, "l.hub_id");
+            default -> throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
+        }
+    }
+
+    private void scopeDetail(AuthPrincipal me, StringBuilder sql, List<Object> args) {
+        if (me == null) {
+            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
+        }
+        switch (me.userType()) {
+            case "RETAILER" -> {
+                sql.append(" AND l.sale_channel = 'INTERNAL' AND l.retailer_user_id = ? ");
+                args.add(me.userId());
+            }
+            case "MASTER_DISTRIBUTOR" -> {
+                sql.append("""
+                         AND (
+                           (l.sale_channel = 'INTERNAL' AND (
+                             l.distributor_user_id = ?
+                             OR l.retailer_user_id = ?
+                             OR l.retailer_user_id IN (
+                                 SELECT id FROM users WHERE parent_id = ? AND user_type = 'RETAILER'
+                             )
+                           ))
+                         )
+                        """);
+                args.add(me.userId());
+                args.add(me.userId());
+                args.add(me.userId());
+            }
+            case "SUPER_ADMIN" -> {
+                // all
+            }
+            case "ADMIN" -> access.appendHubFilter(sql, args, "l.hub_id");
             default -> throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
         }
     }

@@ -79,7 +79,7 @@ public class FdLeadReconApplier {
                     row.partnerStatus(),
                     row.partnerStatusAt() == null ? null : row.partnerStatusAt().toString(),
                     leadId);
-            if (updated == 1 && !commissionAlreadyPaid(leadId)) {
+            if (updated == 1 && !commissionAlreadyPaid(leadId) && payCommission(lead)) {
                 fdCommission.payOnConversion(lead);
             }
             return new ApplyResult(true, updated == 1, true);
@@ -195,5 +195,9 @@ public class FdLeadReconApplier {
 
     private static String blankToNull(String s) {
         return s == null || s.isBlank() ? null : s;
+    }
+
+    private static boolean payCommission(Map<String, Object> lead) {
+        return !"EXTERNAL".equals(String.valueOf(lead.get("sale_channel")));
     }
 }
