@@ -57,6 +57,9 @@ app:
     fd-card-type: ${PAYSPRINT_FD_CARD_TYPE:1}
     callback-enabled: true
     callback-secret: ${PAYSPRINT_CALLBACK_SECRET}
+  kbill:
+    base-url: ${APP_KBILL_BASE_URL:}
+    api-token: ${APP_KBILL_API_TOKEN:}
 
 logging:
   pattern:
