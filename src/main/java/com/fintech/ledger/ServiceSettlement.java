@@ -3,8 +3,6 @@ package com.fintech.ledger;
 import com.fintech.commission.CommissionEngine;
 import com.fintech.platform.web.ApiException;
 import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,24 +54,11 @@ public class ServiceSettlement {
 
         UUID txnId = transactionService.create(txnType, agentId, wallet.walletId(), amount, fee,
                 null, null, partnerCode, idempotencyKeyId);
-        ledgerService.postGroup(txnId, List.of(
-                LedgerService.Entry.debit(wallet.availableAccountId(), total, txnType + " hold"),
-                LedgerService.Entry.credit(wallet.holdAccountId(), total, txnType + " hold")));
-        walletService.adjustCache(wallet.walletId(), total.negate(), total);
-        transactionService.transition(txnId, "HOLD", null, null);
-        transactionService.transition(txnId, "PENDING", partnerRef, null);
+        ledgerService.post(txnId, wallet.walletId(), "DEBIT", total, txnType + " payment");
+        walletService.adjustCache(wallet.walletId(), total.negate(), BigDecimal.ZERO);
         if (!transactionService.transition(txnId, "SUCCESS", partnerRef, null)) {
             throw new IllegalStateException("Could not mark " + txnType + " SUCCESS for " + txnId);
         }
-
-        List<LedgerService.Entry> capture = new ArrayList<>();
-        capture.add(LedgerService.Entry.debit(wallet.holdAccountId(), total, txnType + " capture"));
-        capture.add(LedgerService.Entry.credit(LedgerService.PLATFORM_SETTLEMENT, amount, txnType + " settlement"));
-        if (fee.signum() > 0) {
-            capture.add(LedgerService.Entry.credit(LedgerService.FEE_INCOME, fee, txnType + " fee"));
-        }
-        ledgerService.postGroup(txnId, capture);
-        walletService.adjustCache(wallet.walletId(), BigDecimal.ZERO, total.negate());
         postCommissions(txnId, agentId, txnType, amount);
 
         log.info("SERVICE_SETTLE success type={} txnId={} total={}", txnType, txnId, total);
@@ -89,38 +74,29 @@ public class ServiceSettlement {
         }
         WalletService.WalletInfo agentWallet = walletService.lockByUser(agentId);
         UUID distributorId = jdbc.queryForObject("SELECT parent_id FROM users WHERE id = ?", UUID.class, agentId);
-        UUID postingGroup = null;
+        UUID postingGroup = UUID.randomUUID();
         if (r.add(d).signum() > 0) {
-            List<LedgerService.Entry> split = new ArrayList<>();
-            split.add(LedgerService.Entry.debit(LedgerService.FEE_INCOME, r.add(d), "Commission split payout"));
             if (r.signum() > 0) {
-                split.add(LedgerService.Entry.credit(agentWallet.availableAccountId(), r, "Commission: retailer"));
-            }
-            WalletService.WalletInfo distWallet = null;
-            if (d.signum() > 0 && distributorId != null) {
-                distWallet = walletService.lockByUser(distributorId);
-                split.add(LedgerService.Entry.credit(distWallet.availableAccountId(), d, "Commission: distributor"));
-            }
-            postingGroup = ledgerService.postGroup(txnId, split);
-            if (r.signum() > 0) {
+                ledgerService.post(txnId, agentWallet.walletId(), "CREDIT", r, "Commission: retailer");
                 walletService.adjustCache(agentWallet.walletId(), r, BigDecimal.ZERO);
             }
-            if (distWallet != null) {
+            if (d.signum() > 0 && distributorId != null) {
+                WalletService.WalletInfo distWallet = walletService.lockByUser(distributorId);
+                ledgerService.post(txnId, distWallet.walletId(), "CREDIT", d, "Commission: distributor");
                 walletService.adjustCache(distWallet.walletId(), d, BigDecimal.ZERO);
             }
         }
-        UUID group = postingGroup != null ? postingGroup : UUID.randomUUID();
         UUID platformUser = jdbc.queryForObject(
                 "SELECT id FROM users WHERE user_type = 'SUPER_ADMIN' LIMIT 1", UUID.class);
         CommissionEngine.EarningNetwork network = commissionEngine.networkForRetailer(agentId);
         if (r.signum() > 0) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), agentId, "RETAILER", r, group, network);
+            commissionEngine.recordEarning(txnId, res.ruleId(), agentId, "RETAILER", r, postingGroup, network);
         }
         if (d.signum() > 0 && distributorId != null) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), distributorId, "DISTRIBUTOR", d, group, network);
+            commissionEngine.recordEarning(txnId, res.ruleId(), distributorId, "DISTRIBUTOR", d, postingGroup, network);
         }
         if (res.platformShare().signum() > 0) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), platformUser, "PLATFORM", res.platformShare(), group, network);
+            commissionEngine.recordEarning(txnId, res.ruleId(), platformUser, "PLATFORM", res.platformShare(), postingGroup, network);
         }
         log.info("COMMISSION_SPLIT type={} txnId={} retailer={} distributor={} platform={}",
                 txnType, txnId, r, d, res.platformShare());

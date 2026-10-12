@@ -5,7 +5,6 @@ import com.fintech.ledger.LedgerService;
 import com.fintech.ledger.TransactionService;
 import com.fintech.ledger.WalletService;
 import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -64,21 +63,14 @@ public class FdConversionCommission {
         transactionService.transition(txnId, "SUCCESS", String.valueOf(leadId), null);
 
         UUID distributorId = jdbc.queryForObject("SELECT parent_id FROM users WHERE id = ?", UUID.class, retailerId);
-        List<LedgerService.Entry> split = new ArrayList<>();
-        split.add(LedgerService.Entry.debit(LedgerService.FEE_INCOME, r.add(d), "FD commission payout"));
+        UUID postingGroup = UUID.randomUUID();
         if (r.signum() > 0) {
-            split.add(LedgerService.Entry.credit(agentWallet.availableAccountId(), r, "FD card commission"));
-        }
-        WalletService.WalletInfo distWallet = null;
-        if (d.signum() > 0 && distributorId != null) {
-            distWallet = walletService.lockByUser(distributorId);
-            split.add(LedgerService.Entry.credit(distWallet.availableAccountId(), d, "FD commission: distributor"));
-        }
-        UUID postingGroup = ledgerService.postGroup(txnId, split);
-        if (r.signum() > 0) {
+            ledgerService.post(txnId, agentWallet.walletId(), "CREDIT", r, "FD card commission");
             walletService.adjustCache(agentWallet.walletId(), r, BigDecimal.ZERO);
         }
-        if (distWallet != null) {
+        if (d.signum() > 0 && distributorId != null) {
+            WalletService.WalletInfo distWallet = walletService.lockByUser(distributorId);
+            ledgerService.post(txnId, distWallet.walletId(), "CREDIT", d, "FD commission: distributor");
             walletService.adjustCache(distWallet.walletId(), d, BigDecimal.ZERO);
         }
         UUID ruleId = res.ruleId() != null ? res.ruleId() : ruleIdFor(txnType);

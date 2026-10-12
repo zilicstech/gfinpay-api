@@ -230,7 +230,7 @@ public class DashboardSnapshotService {
     }
 
     private Clause hubClause(String column, AuthPrincipal me) {
-        if (me.superAdmin()) {
+        if (me.superAdminOrPlatformAdmin()) {
             return Clause.ALWAYS;
         }
         List<UUID> hubs = access.hubIdsOrNull();

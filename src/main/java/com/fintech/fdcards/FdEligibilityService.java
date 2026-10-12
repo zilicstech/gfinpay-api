@@ -24,10 +24,11 @@ public class FdEligibilityService {
 
     public Map<String, Object> evaluate(UUID customerId, BigDecimal budget, List<Map<String, Object>> catalogItems) {
         Map<String, Object> out = new LinkedHashMap<>();
+        FdProviderGate.Directory providers = gate.directory();
         catalogItems = catalogItems.stream()
-                .filter(item -> gate.isProviderEnabled(String.valueOf(item.get("provider"))))
+                .filter(item -> providers.enabled(String.valueOf(item.get("provider"))))
                 .toList();
-        if (!gate.isModuleEnabled()) {
+        if (!providers.moduleEnabled()) {
             out.put("products", List.of());
             out.put("message", "FD card sales are switched off");
             return out;
@@ -53,15 +54,16 @@ public class FdEligibilityService {
         }
 
         boolean zetUsed = leads.stream().anyMatch(lead -> FdProviderGate.ZET.equals(String.valueOf(lead.get("provider"))));
-        boolean novuUsed = leads.stream().anyMatch(lead -> gate.isNovuProvider(String.valueOf(lead.get("provider"))));
+        boolean novuUsed = leads.stream().anyMatch(lead -> providers.novu(String.valueOf(lead.get("provider"))));
+        Map<String, Integer> ranks = preferenceRanks(providers);
 
         List<Map<String, Object>> products = new ArrayList<>();
-        for (String provider : preferenceOrder()) {
-            if (!gate.isProviderEnabled(provider)) {
+        for (String provider : preferenceOrder(providers)) {
+            if (!providers.enabled(provider)) {
                 continue;
             }
             boolean zet = FdProviderGate.ZET.equals(provider);
-            boolean novu = gate.isNovuProvider(provider);
+            boolean novu = providers.novu(provider);
             if (zet && zetUsed) {
                 continue;
             }
@@ -72,7 +74,7 @@ public class FdEligibilityService {
                 continue;
             }
             Map<String, Object> open = openByProvider.get(provider);
-            int rank = preferenceRank(provider);
+            int rank = ranks.getOrDefault(provider, 2000);
             for (Map<String, Object> item : catalogItems) {
                 if (!provider.equals(String.valueOf(item.get("provider")))) {
                     continue;
@@ -90,23 +92,33 @@ public class FdEligibilityService {
     }
 
     /** Preference rules first, then any provider not listed, by fallback rank. */
-    private List<String> preferenceOrder() {
+    private List<String> preferenceOrder(FdProviderGate.Directory providers) {
         List<Map<String, Object>> rules = jdbc.queryForList("""
                 SELECT preferred_provider
                   FROM fd_budget_bands
                  ORDER BY preference_rank, preferred_provider
                 """);
-        List<Map<String, Object>> providers = jdbc.queryForList("""
-                SELECT code FROM fd_providers ORDER BY fallback_rank, code
-                """);
         Set<String> order = new LinkedHashSet<>();
         for (Map<String, Object> rule : rules) {
             order.add(String.valueOf(rule.get("preferred_provider")));
         }
-        for (Map<String, Object> row : providers) {
-            order.add(String.valueOf(row.get("code")));
-        }
+        order.addAll(providers.codes());
         return List.copyOf(order);
+    }
+
+    private Map<String, Integer> preferenceRanks(FdProviderGate.Directory providers) {
+        Map<String, Integer> ranks = new LinkedHashMap<>();
+        for (Map<String, Object> row : jdbc.queryForList("""
+                SELECT preferred_provider, preference_rank FROM fd_budget_bands
+                """)) {
+            if (row.get("preference_rank") != null) {
+                ranks.put(String.valueOf(row.get("preferred_provider")), ((Number) row.get("preference_rank")).intValue());
+            }
+        }
+        for (String code : providers.codes()) {
+            ranks.putIfAbsent(code, 1000 + providers.fallbackRank(code));
+        }
+        return ranks;
     }
 
     private static String emptyMessage(boolean zetUsed, boolean novuUsed) {
@@ -123,21 +135,6 @@ public class FdEligibilityService {
             }
         }
         return Map.of("id", id, "code", "", "name", "Secured card", "product_key", "");
-    }
-
-    private int preferenceRank(String provider) {
-        List<Map<String, Object>> rows = jdbc.queryForList("""
-                SELECT preference_rank FROM fd_budget_bands WHERE preferred_provider = ?
-                """, provider);
-        if (!rows.isEmpty() && rows.get(0).get("preference_rank") != null) {
-            return ((Number) rows.get(0).get("preference_rank")).intValue();
-        }
-        List<Map<String, Object>> fallback = jdbc.queryForList(
-                "SELECT fallback_rank FROM fd_providers WHERE code = ?", provider);
-        if (!fallback.isEmpty() && fallback.get(0).get("fallback_rank") != null) {
-            return 1000 + ((Number) fallback.get(0).get("fallback_rank")).intValue();
-        }
-        return 2000;
     }
 
     private static Map<String, Object> productRow(Map<String, Object> item, Map<String, Object> lead,

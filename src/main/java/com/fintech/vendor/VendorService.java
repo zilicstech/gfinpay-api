@@ -1,11 +1,10 @@
 package com.fintech.vendor;
 
 import com.fintech.identity.AdminAccess;
+import com.fintech.persistence.sales.VendorRepository;
 import com.fintech.sales.SaleNetworkSnapshot;
 import com.fintech.platform.web.ApiException;
 import com.fintech.platform.web.PublicAppUrl;
-import java.sql.Timestamp;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -32,13 +31,15 @@ public class VendorService {
     private final AdminAccess access;
     private final GfinCodeGenerator codes;
     private final String publicAppUrl;
+    private final VendorRepository vendors;
 
     public VendorService(JdbcTemplate jdbc, AdminAccess access, GfinCodeGenerator codes,
-                         @Value("${app.public-app-url}") String publicAppUrl) {
+                         @Value("${app.public-app-url}") String publicAppUrl, VendorRepository vendors) {
         this.jdbc = jdbc;
         this.access = access;
         this.codes = codes;
         this.publicAppUrl = PublicAppUrl.canonicalOrigin(publicAppUrl);
+        this.vendors = vendors;
     }
 
     public List<Map<String, Object>> listAdmin() {
@@ -100,12 +101,31 @@ public class VendorService {
         return getAdmin(id);
     }
 
+    @Transactional
+    public Map<String, Object> updateStatus(UUID id, String status) {
+        access.requirePlatformStaff();
+        Map<String, Object> v = getAdmin(id);
+        String s = status == null ? "" : status.trim().toUpperCase();
+        if (!List.of("ACTIVE", "INACTIVE", "SUSPENDED").contains(s)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_STATUS",
+                    "Status must be ACTIVE, INACTIVE, or SUSPENDED");
+        }
+        int n = vendors.updateStatus(id, s);
+        if (n == 0) {
+            throw ApiException.of(HttpStatus.NOT_FOUND, "VENDOR_NOT_FOUND", "Vendor not found");
+        }
+        return getAdmin(id);
+    }
+
     public Map<String, Object> publicVendor(String code) {
-        List<Map<String, Object>> rows = jdbc.queryForList(VENDOR_SELECT + " WHERE v.code = ? AND v.status = 'ACTIVE'", code);
+        List<Map<String, Object>> rows = jdbc.queryForList(VENDOR_SELECT + " WHERE v.code = ?", code);
         if (rows.isEmpty()) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "VENDOR_NOT_FOUND", "Vendor not found");
         }
         Map<String, Object> v = rows.get(0);
+        if (!"ACTIVE".equals(v.get("status"))) {
+            throw ApiException.of(HttpStatus.GONE, "VENDOR_INACTIVE", "This vendor URL is not active");
+        }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("code", v.get("code"));
         out.put("full_name", v.get("full_name"));
@@ -122,11 +142,15 @@ public class VendorService {
     @Transactional
     public Map<String, Object> mintAffiliateLink(String vendorCode, String employeeName, String employeeCode) {
         List<Map<String, Object>> vendors = jdbc.queryForList(
-                "SELECT id, code FROM vendors WHERE code = ? AND status = 'ACTIVE'", vendorCode);
+                "SELECT id, code, status FROM vendors WHERE code = ?", vendorCode);
         if (vendors.isEmpty()) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "VENDOR_NOT_FOUND", "Vendor not found");
         }
-        UUID vendorId = (UUID) vendors.get(0).get("id");
+        Map<String, Object> v = vendors.get(0);
+        if (!"ACTIVE".equals(v.get("status"))) {
+            throw ApiException.of(HttpStatus.GONE, "VENDOR_INACTIVE", "This vendor URL is not active");
+        }
+        UUID vendorId = (UUID) v.get("id");
         String empCode = employeeCode.trim();
         String empName = employeeName.trim();
         if (empCode.isBlank() || empName.isBlank()) {
@@ -171,15 +195,18 @@ public class VendorService {
         String ref = normalizeDeskRef(deskRef);
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 SELECT a.id, a.employee_name, a.employee_code, a.gfin_code AS employee_gfin_code,
-                       v.full_name AS vendor_name, v.code AS vendor_code
+                       v.full_name AS vendor_name, v.code AS vendor_code, v.status AS vendor_status
                   FROM vendor_affiliates a
                   JOIN vendors v ON v.id = a.vendor_id
-                 WHERE (upper(a.gfin_code) = upper(?) OR a.apply_token = ?) AND v.status = 'ACTIVE'
+                 WHERE (upper(a.gfin_code) = upper(?) OR a.apply_token = ?)
                 """, ref, ref);
         if (rows.isEmpty()) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "AFFILIATE_NOT_FOUND", "This link is not valid");
         }
         Map<String, Object> row = rows.get(0);
+        if (!"ACTIVE".equals(row.get("vendor_status"))) {
+            throw ApiException.of(HttpStatus.GONE, "VENDOR_INACTIVE", "This URL is not active");
+        }
         List<Map<String, Object>> products = jdbc.queryForList("""
                 SELECT id, code, name, product_key
                   FROM catalog_items
@@ -202,19 +229,23 @@ public class VendorService {
         List<Map<String, Object>> desk = jdbc.queryForList("""
                 SELECT a.id AS affiliate_id, a.gfin_code, a.employee_name, a.employee_code,
                        a.vendor_id, v.hub_id, v.full_name AS vendor_name, v.code AS vendor_code,
+                       v.status AS vendor_status,
                        h.name AS hub_name,
                        i.apply_url, i.name AS item_name, i.category_code, i.provider, i.product_key
                   FROM vendor_affiliates a
                   JOIN vendors v ON v.id = a.vendor_id
                   LEFT JOIN hubs h ON h.id = v.hub_id
                   JOIN catalog_items i ON i.id = ?
-                 WHERE (upper(a.gfin_code) = upper(?) OR a.apply_token = ?) AND v.status = 'ACTIVE'
+                 WHERE (upper(a.gfin_code) = upper(?) OR a.apply_token = ?)
                    AND i.category_code = 'FD_CARD' AND i.provider = 'ZET' AND i.active = TRUE
                 """, catalogItemId, ref, ref);
         if (desk.isEmpty()) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "AFFILIATE_NOT_FOUND", "This link is not valid");
         }
         Map<String, Object> row = desk.get(0);
+        if (!"ACTIVE".equals(row.get("vendor_status"))) {
+            throw ApiException.of(HttpStatus.GONE, "VENDOR_INACTIVE", "This URL is not active");
+        }
         String template = String.valueOf(row.get("apply_url"));
         if (template.isBlank() || "null".equals(template)) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "LINK_UNAVAILABLE", "This card link is not configured");
@@ -268,10 +299,6 @@ public class VendorService {
                 String.valueOf(row.get("employee_name")),
                 row.get("hub_name") == null ? "—" : String.valueOf(row.get("hub_name")),
                 String.valueOf(row.get("product_key")));
-        jdbc.update("""
-                INSERT INTO vendor_card_links (id, affiliate_id, customer_id, catalog_item_id)
-                VALUES (?, ?, ?, ?)
-                """, trackingRef, affiliateId, customerId, catalogItemId);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("url", applyUrl);
         out.put("tracking_ref", trackingRef.toString());
@@ -328,11 +355,12 @@ public class VendorService {
                 SELECT l.id AS tracking_ref, c.id AS customer_id, c.full_name AS customer_name, c.mobile AS customer_mobile,
                        a.id AS affiliate_id, a.vendor_id, a.affiliate_ref, a.employee_name, a.employee_code, a.gfin_code,
                        v.full_name AS vendor_name, v.code AS vendor_code, v.hub_id
-                  FROM vendor_card_links l
+                  FROM sales_leads l
                   JOIN customers c ON c.id = l.customer_id
-                  JOIN vendor_affiliates a ON a.id = l.affiliate_id
-                  JOIN vendors v ON v.id = a.vendor_id
+                  JOIN vendor_affiliates a ON a.id = l.retailer_user_id
+                  JOIN vendors v ON v.id = l.distributor_user_id
                  WHERE l.id = ?
+                   AND l.sale_channel = 'EXTERNAL'
                 """, parsed);
         if (!links.isEmpty()) {
             return OptionalVendorLead.from(links.get(0));
@@ -364,71 +392,6 @@ public class VendorService {
             return null;
         }
         return OptionalAffiliate.from(rows.get(0));
-    }
-
-    @Transactional
-    public void upsertVendorSale(OptionalVendorLead lead, String phone, String name, String productKey,
-                                 String partnerStatus, Instant partnerStatusAt, String partnerUserId,
-                                 Map<String, Object> payload) {
-        String resolvedName = name == null || name.isBlank() ? lead.customerName() : name;
-        String resolvedPhone = phone == null || phone.isBlank() ? lead.customerMobile() : phone;
-        if (lead.trackingRef() != null) {
-            jdbc.update("""
-                    INSERT INTO vendor_sales
-                        (id, vendor_id, affiliate_id, affiliate_ref, tracking_ref, customer_id,
-                         customer_mobile, customer_name, product_key,
-                         partner_status, partner_status_at, partner_user_id, payload)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
-                    ON CONFLICT (tracking_ref)
-                    DO UPDATE SET
-                        customer_name = COALESCE(EXCLUDED.customer_name, vendor_sales.customer_name),
-                        customer_mobile = EXCLUDED.customer_mobile,
-                        partner_status = EXCLUDED.partner_status,
-                        partner_status_at = EXCLUDED.partner_status_at,
-                        partner_user_id = COALESCE(EXCLUDED.partner_user_id, vendor_sales.partner_user_id),
-                        payload = EXCLUDED.payload,
-                        updated_at = now()
-                    """,
-                    UUID.randomUUID(),
-                    lead.vendorId(),
-                    lead.affiliateId(),
-                    lead.affiliateRef(),
-                    lead.trackingRef(),
-                    lead.customerId(),
-                    resolvedPhone,
-                    resolvedName,
-                    productKey,
-                    partnerStatus,
-                    partnerStatusAt == null ? null : Timestamp.from(partnerStatusAt),
-                    partnerUserId,
-                    payloadJson(payload));
-            return;
-        }
-        jdbc.update("""
-                INSERT INTO vendor_sales
-                    (id, vendor_id, affiliate_id, affiliate_ref, customer_mobile, customer_name, product_key,
-                     partner_status, partner_status_at, partner_user_id, payload)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
-                ON CONFLICT (affiliate_ref, customer_mobile, product_key)
-                DO UPDATE SET
-                    customer_name = COALESCE(EXCLUDED.customer_name, vendor_sales.customer_name),
-                    partner_status = EXCLUDED.partner_status,
-                    partner_status_at = EXCLUDED.partner_status_at,
-                    partner_user_id = COALESCE(EXCLUDED.partner_user_id, vendor_sales.partner_user_id),
-                    payload = EXCLUDED.payload,
-                    updated_at = now()
-                """,
-                UUID.randomUUID(),
-                lead.vendorId(),
-                lead.affiliateId(),
-                lead.affiliateRef(),
-                resolvedPhone,
-                resolvedName,
-                productKey,
-                partnerStatus,
-                partnerStatusAt == null ? null : Timestamp.from(partnerStatusAt),
-                partnerUserId,
-                payloadJson(payload));
     }
 
     public record OptionalAffiliate(
@@ -598,13 +561,5 @@ public class VendorService {
 
     private static String blankToNull(String s) {
         return s == null || s.isBlank() ? null : s.trim();
-    }
-
-    private String payloadJson(Map<String, Object> payload) {
-        try {
-            return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(payload);
-        } catch (Exception e) {
-            return "{}";
-        }
     }
 }

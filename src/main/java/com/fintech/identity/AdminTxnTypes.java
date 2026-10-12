@@ -40,9 +40,9 @@ public final class AdminTxnTypes {
     }
 
     public static Group require(String code) {
-        if (code == null || code.isBlank()) {
-            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_TXN_TYPE",
-                    "Select a transaction type");
+        if (code == null || code.isBlank() || "ALL".equalsIgnoreCase(code.trim())) {
+            List<String> types = GROUPS.stream().flatMap(g -> g.txnTypes().stream()).distinct().toList();
+            return new Group("ALL", "All rails", types);
         }
         Group group = BY_CODE.get(code.trim().toUpperCase(Locale.ROOT));
         if (group == null) {

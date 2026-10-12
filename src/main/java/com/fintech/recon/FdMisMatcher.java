@@ -38,6 +38,9 @@ public class FdMisMatcher {
                 return byRef;
             }
         }
+        if ("PAYSPRINT".equals(row.provider()) || "GROWMORE".equals(row.provider())) {
+            return Optional.empty();
+        }
         List<Map<String, Object>> customers = jdbc.queryForList(
                 "SELECT id FROM customers WHERE mobile = ? LIMIT 1", row.phone());
         if (customers.isEmpty()) {
@@ -48,10 +51,10 @@ public class FdMisMatcher {
                  WHERE l.customer_id = ?
                    AND l.product_code = ?
                    AND l.sale_type = 'FD_CARD'
-                   AND (l.sale_provider = 'ZET')
+                   AND l.sale_provider = ?
                    AND l.state <> 'EXPIRED'
                  ORDER BY l.created_at DESC
-                """, customerId, row.productKey());
+                """, customerId, row.productKey(), row.provider());
         if (leads.isEmpty()) {
             return Optional.empty();
         }
@@ -72,10 +75,10 @@ public class FdMisMatcher {
         List<Map<String, Object>> leads = jdbc.queryForList(LEAD_SELECT + """
                  WHERE (l.provider_refid = ? OR l.id::text = ?)
                    AND l.sale_type = 'FD_CARD'
-                   AND (l.sale_provider = 'ZET')
+                   AND l.sale_provider = ?
                    AND l.state <> 'EXPIRED'
                  LIMIT 1
-                """, ref, ref);
+                """, ref, ref, row.provider());
         if (leads.isEmpty()) {
             return Optional.empty();
         }
@@ -89,7 +92,83 @@ public class FdMisMatcher {
         details.put("sheet", row.sheetName());
         details.put("partner_status", row.partnerStatus());
         details.put("source_column", row.sourceColumn());
-        return new FdReconMismatch("MISSING_INTERNAL", row.partnerUserId(), details);
+        String partnerRef = row.partnerUserId();
+        if (partnerRef == null || partnerRef.isBlank()) {
+            partnerRef = row.matchRef();
+        }
+        return new FdReconMismatch("MISSING_INTERNAL", partnerRef, details);
+    }
+
+    public List<FdReconMismatch> missingPaysprintAtPartner(List<FdMisRow> parsedRows) {
+        Set<String> seen = new HashSet<>();
+        for (FdMisRow row : parsedRows) {
+            if (row.matchRef() != null && !row.matchRef().isBlank()) {
+                seen.add(row.matchRef());
+            }
+        }
+        List<FdReconMismatch> out = new ArrayList<>();
+        List<Map<String, Object>> openLeads = jdbc.queryForList("""
+                SELECT l.id, l.provider_refid, l.state, l.product_code, c.mobile, c.full_name
+                  FROM sales_leads l
+                  JOIN customers c ON c.id = l.customer_id
+                 WHERE l.sale_type = 'FD_CARD'
+                   AND l.sale_channel = 'INTERNAL'
+                   AND l.sale_provider = 'PAYSPRINT'
+                   AND l.payment_link_url IS NOT NULL
+                   AND l.state IN ('LINK_CREATED', 'OPENED', 'IN_PROGRESS')
+                """);
+        for (Map<String, Object> lead : openLeads) {
+            String ref = lead.get("provider_refid") == null ? null : String.valueOf(lead.get("provider_refid"));
+            if (ref != null && seen.contains(ref)) {
+                continue;
+            }
+            UUID id = (UUID) lead.get("id");
+            String partnerRef = ref == null || ref.isBlank() ? id.toString() : ref;
+            Map<String, Object> details = new HashMap<>();
+            details.put("phone", lead.get("mobile"));
+            details.put("name", lead.get("full_name"));
+            details.put("product_key", lead.get("product_code"));
+            details.put("lead_id", id.toString());
+            details.put("state", lead.get("state"));
+            out.add(new FdReconMismatch("MISSING_AT_PARTNER", partnerRef, details));
+        }
+        return out;
+    }
+
+    public List<FdReconMismatch> missingGrowmoreAtPartner(List<FdMisRow> parsedRows) {
+        Set<String> seen = new HashSet<>();
+        for (FdMisRow row : parsedRows) {
+            if (row.matchRef() != null && !row.matchRef().isBlank()) {
+                seen.add(row.matchRef());
+            }
+        }
+        List<FdReconMismatch> out = new ArrayList<>();
+        List<Map<String, Object>> openLeads = jdbc.queryForList("""
+                SELECT l.id, l.provider_refid, l.state, l.product_code, c.mobile, c.full_name
+                  FROM sales_leads l
+                  JOIN customers c ON c.id = l.customer_id
+                 WHERE l.sale_type = 'FD_CARD'
+                   AND l.sale_channel = 'INTERNAL'
+                   AND l.sale_provider = 'GROWMORE'
+                   AND l.payment_link_url IS NOT NULL
+                   AND l.state IN ('LINK_CREATED', 'OPENED', 'IN_PROGRESS')
+                """);
+        for (Map<String, Object> lead : openLeads) {
+            String ref = lead.get("provider_refid") == null ? null : String.valueOf(lead.get("provider_refid"));
+            if (ref != null && seen.contains(ref)) {
+                continue;
+            }
+            UUID id = (UUID) lead.get("id");
+            String partnerRef = ref == null || ref.isBlank() ? id.toString() : ref;
+            Map<String, Object> details = new HashMap<>();
+            details.put("phone", lead.get("mobile"));
+            details.put("name", lead.get("full_name"));
+            details.put("product_key", lead.get("product_code"));
+            details.put("lead_id", id.toString());
+            details.put("state", lead.get("state"));
+            out.add(new FdReconMismatch("MISSING_AT_PARTNER", partnerRef, details));
+        }
+        return out;
     }
 
     public List<FdReconMismatch> missingAtPartner(List<FdMisRow> parsedRows) {

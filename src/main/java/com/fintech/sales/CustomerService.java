@@ -2,6 +2,7 @@ package com.fintech.sales;
 
 import com.fintech.dmt.DmtService;
 import com.fintech.identity.AdminAccess;
+import com.fintech.persistence.sales.CustomerRepository;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiException;
 import java.util.LinkedHashMap;
@@ -34,10 +35,12 @@ public class CustomerService {
 
     private final JdbcTemplate jdbc;
     private final AdminAccess access;
+    private final CustomerRepository customers;
 
-    public CustomerService(JdbcTemplate jdbc, AdminAccess access) {
+    public CustomerService(JdbcTemplate jdbc, AdminAccess access, CustomerRepository customers) {
         this.jdbc = jdbc;
         this.access = access;
+        this.customers = customers;
     }
 
     public List<Map<String, Object>> list(AuthPrincipal me, String mobile, UUID retailerUserId, UUID distributorUserId) {
@@ -141,9 +144,7 @@ public class CustomerService {
         }
         String role = switch (me.userType()) {
             case "RETAILER" -> "RETAILER";
-            case "MASTER_DISTRIBUTOR" -> "DISTRIBUTOR";
-            case "SUPER_ADMIN" -> "ADMIN";
-            case "ADMIN" -> "ADMIN";
+            case "SUPER_ADMIN", "ADMIN", "HUBADMIN" -> "ADMIN";
             default -> throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed to add customers");
         };
         String code;
@@ -161,6 +162,7 @@ public class CustomerService {
     @Transactional
     public Map<String, Object> update(AuthPrincipal me, UUID id, String name, String mobile, String email,
                                       String city, String state, String pincode) {
+        requireRetailer(me);
         get(me, id);
         String digits = mobileDigits(mobile);
         assertCustomerMobileAvailable(digits, id);
@@ -217,16 +219,8 @@ public class CustomerService {
                 && hasText(customer.get("email"));
         String reason = profileOk ? null : "Add the customer's name, 10-digit mobile, and email";
         String status = profileOk ? "ELIGIBLE" : "INELIGIBLE";
-        List<Map<String, Object>> categories = jdbc.queryForList("SELECT code FROM catalog_categories");
-        for (Map<String, Object> category : categories) {
-            jdbc.update("""
-                    INSERT INTO customer_category_eligibility (customer_id, category_code, status, reason, checked_at)
-                    VALUES (?, ?, ?, ?, now())
-                    ON CONFLICT (customer_id, category_code)
-                    DO UPDATE SET status = EXCLUDED.status, reason = EXCLUDED.reason, checked_at = now()
-                    """, id, category.get("code"), status, reason);
-        }
-        return get(me, id);
+        customers.upsertEligibility(id, status, reason);
+        return customer;
     }
 
     private void scopeAdminHubs(StringBuilder sql, java.util.List<Object> args) {
@@ -263,10 +257,10 @@ public class CustomerService {
                 args.add(me.userId());
                 args.add(me.userId());
             }
-            case "SUPER_ADMIN" -> {
+            case "SUPER_ADMIN", "ADMIN", "AUDITOR" -> {
                 // network-wide
             }
-            case "ADMIN" -> scopeAdminHubs(sql, args);
+            case "HUBADMIN" -> scopeAdminHubs(sql, args);
             default -> throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
         }
     }
@@ -278,13 +272,13 @@ public class CustomerService {
     }
 
     static void requireSalesDesk(AuthPrincipal me) {
-        if (me == null || (!"RETAILER".equals(me.userType()) && !"MASTER_DISTRIBUTOR".equals(me.userType()))) {
-            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Only a retailer or distributor desk can do this");
+        if (me == null || !"RETAILER".equals(me.userType())) {
+            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Only a retailer can sell to a customer");
         }
     }
 
     static boolean deskPrincipal(AuthPrincipal me) {
-        return me != null && ("RETAILER".equals(me.userType()) || "MASTER_DISTRIBUTOR".equals(me.userType()));
+        return me != null && "RETAILER".equals(me.userType());
     }
 
     /** WHERE clause for desk updates; appends customer id and scope args to {@code args}. */
@@ -293,18 +287,6 @@ public class CustomerService {
         if ("RETAILER".equals(me.userType())) {
             args.add(me.userId());
             return "id = ? AND retailer_user_id = ?";
-        }
-        if ("MASTER_DISTRIBUTOR".equals(me.userType())) {
-            args.add(me.userId());
-            args.add(me.userId());
-            return """
-                    id = ? AND (
-                      retailer_user_id = ?
-                      OR retailer_user_id IN (
-                          SELECT id FROM users WHERE parent_id = ? AND user_type = 'RETAILER'
-                      )
-                    )
-                    """;
         }
         throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
     }

@@ -39,23 +39,18 @@ public class CommissionEngine {
                        r.commission_type                                      AS commission_type,
                        r.retailer_amount                                      AS retailer_amount,
                        r.distributor_amount                                   AS distributor_amount,
-                       COALESCE(o.total_rate_bp, r.total_rate_bp)             AS bp,
-                       COALESCE(o.flat_fee, r.flat_fee)                       AS flat_fee,
-                       COALESCE(o.retailer_share_pct, r.retailer_share_pct)   AS retailer_pct,
-                       COALESCE(o.distributor_share_pct, r.distributor_share_pct) AS distributor_pct,
-                       (o.id IS NOT NULL)                                     AS overridden
+                       r.total_rate_bp                                        AS bp,
+                       r.flat_fee                                             AS flat_fee,
+                       r.retailer_share_pct                                   AS retailer_pct,
+                       r.distributor_share_pct                                AS distributor_pct,
+                       FALSE                                                  AS overridden
                   FROM commission_rules r
-                  LEFT JOIN commission_rule_overrides o
-                         ON o.rule_id = r.id AND o.retailer_user_id = ?
-                        AND o.effective_from <= now()
-                        AND (o.effective_to IS NULL OR o.effective_to > now())
                  WHERE r.txn_type = ?
                    AND ? BETWEEN r.slab_min AND r.slab_max
                    AND r.effective_from <= now()
                    AND (r.effective_to IS NULL OR r.effective_to > now())
-                 ORDER BY overridden DESC
                  LIMIT 1
-                """, retailerUserId, txnType, amount);
+                """, txnType, amount);
         if (rows.isEmpty()) {
             return Resolution.zero();
         }

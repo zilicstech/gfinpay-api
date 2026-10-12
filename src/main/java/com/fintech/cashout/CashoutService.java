@@ -101,9 +101,7 @@ public class CashoutService {
         WalletService.WalletInfo wallet = walletService.lockByUser(me.userId());
         String ref = "UPI" + sessionId.toString().substring(0, 8).toUpperCase();
         transactionService.transition(txnId, "SUCCESS", ref, null);
-        ledgerService.postGroup(txnId, List.of(
-                LedgerService.Entry.debit(LedgerService.PLATFORM_SETTLEMENT, amount, "UPI cash-out collect"),
-                LedgerService.Entry.credit(wallet.availableAccountId(), amount, "UPI cash-out received")));
+        ledgerService.post(txnId, wallet.walletId(), "CREDIT", amount, "UPI cash-out received");
         walletService.adjustCache(wallet.walletId(), amount, BigDecimal.ZERO);
         jdbc.update("""
                 UPDATE cashout_sessions

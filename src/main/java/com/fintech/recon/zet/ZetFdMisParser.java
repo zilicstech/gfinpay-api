@@ -6,6 +6,9 @@ import com.fintech.recon.FdPartnerLifecycle;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -149,7 +152,54 @@ public class ZetFdMisParser {
                 sourceColumn,
                 winnerAt,
                 lifecycle,
-                raw);
+                raw,
+                partnerSnapshot(def, row, idx));
+    }
+
+    /** One entry per filled ZET column, in funnel order. Each provider can use a different shape. */
+    private static Map<String, Object> partnerSnapshot(ZetSheetFunnel def, Row row, Map<String, Integer> idx) {
+        List<Map<String, String>> stages = new ArrayList<>();
+        String signupAt = stageTime(row, idx.get("signup_date"));
+        if (signupAt != null) {
+            stages.add(stage("SIGNED_UP", signupAt));
+        }
+        for (ZetFunnelStage stage : def.stages()) {
+            String at = stageTime(row, idx.get(stage.header()));
+            if (at != null) {
+                stages.add(stage(stage.partnerStatus(), at));
+            }
+        }
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("provider", PROVIDER);
+        snapshot.put("product", def.productKey());
+        snapshot.put("stages", stages);
+        return snapshot;
+    }
+
+    private static Map<String, String> stage(String status, String time) {
+        Map<String, String> stage = new LinkedHashMap<>();
+        stage.put("status", status);
+        stage.put("time", time);
+        return stage;
+    }
+
+    private static String stageTime(Row row, Integer col) {
+        if (!ZetExcelCells.filled(row, col)) {
+            return null;
+        }
+        Instant at = ZetExcelCells.instant(row, col);
+        if (at != null && !Instant.EPOCH.equals(at)) {
+            return at.toString();
+        }
+        String raw = ZetExcelCells.text(row, col);
+        if (raw.length() >= 10) {
+            try {
+                return LocalDate.parse(raw.substring(0, 10)).atStartOfDay().toInstant(ZoneOffset.UTC).toString();
+            } catch (DateTimeParseException ignored) {
+                // keep the cell text
+            }
+        }
+        return raw.isBlank() ? null : raw;
     }
 
     private static Map<String, Integer> headerIndex(Row headerRow) {

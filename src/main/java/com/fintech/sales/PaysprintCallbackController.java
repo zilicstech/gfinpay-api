@@ -7,7 +7,10 @@ import com.fintech.paysprint.PaysprintProperties;
 import com.fintech.platform.web.ApiException;
 import com.fintech.platform.web.ApiResponse;
 import com.fintech.platform.webhook.WebhookService;
+import jakarta.servlet.http.HttpServletRequest;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -18,6 +21,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/webhooks/paysprint")
 public class PaysprintCallbackController {
+
+    private static final Logger log = LoggerFactory.getLogger(PaysprintCallbackController.class);
 
     private final WebhookService webhookService;
     private final PaysprintProperties props;
@@ -30,10 +35,13 @@ public class PaysprintCallbackController {
     }
 
     @PostMapping({"/fd", "/lead", "/utm"})
-    public ApiResponse<Map<String, String>> receive(@RequestHeader(value = "X-Paysprint-Secret", required = false) String secret,
+    public ApiResponse<Map<String, String>> receive(HttpServletRequest request,
+                                                    @RequestHeader(value = "X-Paysprint-Secret", required = false) String secret,
                                                     @RequestBody String rawBody) throws Exception {
+        log.info("PAYSPRINT_WEBHOOK url={} body={}", request.getRequestURL(), rawBody);
         if (props.callbackSecret() != null && !props.callbackSecret().isBlank()
                 && (secret == null || !props.callbackSecret().equals(secret))) {
+            log.info("PAYSPRINT_WEBHOOK rejected url={} reason=invalid_secret", request.getRequestURL());
             throw ApiException.of(HttpStatus.UNAUTHORIZED, "WEBHOOK_SECRET_INVALID", "Invalid callback secret");
         }
         JsonNode incoming = mapper.readTree(rawBody);

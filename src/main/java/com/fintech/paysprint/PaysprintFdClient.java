@@ -70,9 +70,7 @@ public class PaysprintFdClient {
 
     private JsonNode post(String path, Map<String, String> request, String errorCode) {
         String url = props.baseUrl() + path;
-        if (log.isDebugEnabled()) {
-            log.debug("PAYSPRINT_API request POST {} body={}", url, mapper.valueToTree(request));
-        }
+        log.info("PAYSPRINT_API request POST {} body={}", url, mapper.valueToTree(request));
         String body;
         try {
             body = restClient.post()
@@ -83,9 +81,9 @@ public class PaysprintFdClient {
                     .body(request)
                     .retrieve()
                     .body(String.class);
-            log.debug("PAYSPRINT_API response POST {} status=200 body={}", url, body);
+            log.info("PAYSPRINT_API response POST {} status=200 body={}", url, body);
         } catch (RestClientResponseException e) {
-            log.debug("PAYSPRINT_API response POST {} status={} body={}", url, e.getStatusCode().value(),
+            log.info("PAYSPRINT_API response POST {} status={} body={}", url, e.getStatusCode().value(),
                     e.getResponseBodyAsString());
             throw ApiException.of(HttpStatus.BAD_GATEWAY, errorCode, paysprintMessage(e));
         }

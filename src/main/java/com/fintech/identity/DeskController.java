@@ -4,6 +4,7 @@ import com.fintech.platform.PlatformServiceGate;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiResponse;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
@@ -35,7 +36,7 @@ public class DeskController {
             @NotBlank String city,
             @NotBlank String state,
             @NotBlank @Pattern(regexp = "\\d{6}", message = "6-digit pincode required") String pincode,
-            String email) {}
+            @NotBlank @Email(message = "A valid email is required") String email) {}
 
     public record StatusRequest(@NotBlank String status) {}
 
@@ -50,10 +51,13 @@ public class DeskController {
 
     private final DeskService desk;
     private final PlatformServiceGate platformServices;
+    private final RetailerPaysprintEkycService paysprintEkyc;
 
-    public DeskController(DeskService desk, PlatformServiceGate platformServices) {
+    public DeskController(DeskService desk, PlatformServiceGate platformServices,
+                          RetailerPaysprintEkycService paysprintEkyc) {
         this.desk = desk;
         this.platformServices = platformServices;
+        this.paysprintEkyc = paysprintEkyc;
     }
 
     @GetMapping("/platform-services")
@@ -87,6 +91,24 @@ public class DeskController {
     @PreAuthorize("hasAuthority('reports.view')")
     public ApiResponse<Map<String, Object>> outlet(@AuthenticationPrincipal AuthPrincipal me, @PathVariable UUID id) {
         return ApiResponse.ok(desk.getOutlet(me, id));
+    }
+
+    @PostMapping("/outlets/{id}/paysprint-onboard")
+    @PreAuthorize("hasAuthority('outlets.manage')")
+    public ApiResponse<Map<String, Object>> paysprintOnboard(@AuthenticationPrincipal AuthPrincipal me,
+                                                             @PathVariable UUID id,
+                                                             @RequestBody(required = false) Map<String, String> body) {
+        desk.getOutlet(me, id);
+        String email = body == null ? null : body.get("email");
+        return ApiResponse.ok(paysprintEkyc.issue(id, email));
+    }
+
+    @PostMapping("/outlets/{id}/paysprint-onboard/status")
+    @PreAuthorize("hasAuthority('outlets.manage')")
+    public ApiResponse<Map<String, Object>> paysprintOnboardStatus(@AuthenticationPrincipal AuthPrincipal me,
+                                                                   @PathVariable UUID id) {
+        desk.getOutlet(me, id);
+        return ApiResponse.ok(paysprintEkyc.checkStatus(id));
     }
 
     @GetMapping("/outlets/{id}/performance")

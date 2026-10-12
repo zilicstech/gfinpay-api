@@ -196,9 +196,7 @@ public class DmtService {
             // 5. Transaction row + ledger HOLD posting
             UUID txnId = transactionService.create("DMT", agentId, wallet.walletId(), amount, fee,
                     senderId, beneficiaryId, "SPONSOR_BANK", claim.keyId());
-            ledgerService.postGroup(txnId, List.of(
-                    LedgerService.Entry.debit(wallet.availableAccountId(), total, "DMT hold"),
-                    LedgerService.Entry.credit(wallet.holdAccountId(), total, "DMT hold")));
+            ledgerService.post(txnId, wallet.walletId(), "DEBIT", total, "DMT hold");
             walletService.adjustCache(wallet.walletId(), total.negate(), total);
             transactionService.transition(txnId, "HOLD", null, null);
 

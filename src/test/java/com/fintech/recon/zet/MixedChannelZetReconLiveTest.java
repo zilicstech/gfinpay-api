@@ -31,6 +31,7 @@ class MixedChannelZetReconLiveTest {
     void reconcileMixedInternalAndVendorExcel() throws Exception {
         assumeTrue(handler != null && jdbc != null, "Spring context not available");
         assumeTrue(postgresReachable(), "Local Postgres not running");
+        assumeTrue(hasRequiredSeedLeads(), "Seed leads from seed-mixed-channel not loaded in local DB");
 
         Path xlsx = Path.of("src/test/resources/recon/zet-mixed-internal-vendor.xlsx");
         if (!Files.exists(xlsx)) {
@@ -63,6 +64,17 @@ class MixedChannelZetReconLiveTest {
         try {
             jdbc.queryForObject("SELECT 1", Integer.class);
             return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean hasRequiredSeedLeads() {
+        try {
+            Integer count = jdbc.queryForObject(
+                    "SELECT COUNT(*)::int FROM sales_leads WHERE id = ?::uuid",
+                    Integer.class, "27edb71d-72a2-4a3f-b5ec-81a001045b63");
+            return count != null && count > 0;
         } catch (Exception e) {
             return false;
         }

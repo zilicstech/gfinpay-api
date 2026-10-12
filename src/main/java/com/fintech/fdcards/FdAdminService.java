@@ -1,5 +1,6 @@
 package com.fintech.fdcards;
 
+import com.fintech.persistence.config.FdProviderRepository;
 import com.fintech.platform.web.ApiException;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.PositiveOrZero;
@@ -23,9 +24,11 @@ public class FdAdminService {
             FdProviderGate.GROWMORE, List.of("DCB_FD_GROWMORE"));
 
     private final JdbcTemplate jdbc;
+    private final FdProviderRepository providers;
 
-    public FdAdminService(JdbcTemplate jdbc) {
+    public FdAdminService(JdbcTemplate jdbc, FdProviderRepository providers) {
         this.jdbc = jdbc;
+        this.providers = providers;
     }
 
     public List<Map<String, Object>> listProviders() {
@@ -34,15 +37,43 @@ public class FdAdminService {
                   FROM fd_providers
                  ORDER BY fallback_rank, code
                 """);
+        Map<String, List<Map<String, Object>>> itemsByProvider = new LinkedHashMap<>();
+        for (Map<String, Object> item : jdbc.queryForList("""
+                SELECT code, name, product_key, rail, apply_url, active, provider
+                  FROM catalog_items
+                 WHERE category_code = 'FD_CARD'
+                 ORDER BY sort_order
+                """)) {
+            itemsByProvider.computeIfAbsent(String.valueOf(item.get("provider")), key -> new ArrayList<>()).add(item);
+        }
+        Map<String, Map<String, Object>> ruleByTxn = new LinkedHashMap<>();
+        for (Map<String, Object> rule : jdbc.queryForList("""
+                SELECT DISTINCT ON (txn_type)
+                       id, txn_type, slab_min, slab_max, total_rate_bp, flat_fee,
+                       retailer_share_pct, distributor_share_pct, platform_share_pct,
+                       commission_type, retailer_amount, distributor_amount
+                  FROM commission_rules
+                 WHERE effective_to IS NULL
+                 ORDER BY txn_type, effective_from DESC
+                """)) {
+            ruleByTxn.put(String.valueOf(rule.get("txn_type")), decorateRule(new LinkedHashMap<>(rule)));
+        }
         for (Map<String, Object> provider : providers) {
-            provider.put("catalog_items", catalogItemsForProvider(String.valueOf(provider.get("code"))));
-            provider.put("commission_rule", commissionRuleFor(String.valueOf(provider.get("commission_txn_type"))));
+            String code = String.valueOf(provider.get("code"));
+            List<Map<String, Object>> items = itemsByProvider.getOrDefault(code, List.of());
+            for (Map<String, Object> item : items) {
+                item.remove("provider");
+            }
+            provider.put("catalog_items", items);
+            String txnType = String.valueOf(provider.get("commission_txn_type"));
+            provider.put("commission_rule", ruleByTxn.getOrDefault(txnType, Map.of()));
         }
         return providers;
     }
 
+    @Transactional
     public Map<String, Object> setProviderEnabled(String code, boolean enabled) {
-        int n = jdbc.update("UPDATE fd_providers SET enabled = ?, updated_at = now() WHERE code = ?", enabled, code);
+        int n = providers.updateEnabled(code, enabled);
         if (n == 0) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "PROVIDER_NOT_FOUND", "FD provider not found");
         }
@@ -56,11 +87,15 @@ public class FdAdminService {
         }
         if (applyUrls != null && !applyUrls.isEmpty()) {
             List<String> itemCodes = CATALOG_URL_CODES.getOrDefault(code, List.of());
+            List<Object[]> batch = new ArrayList<>();
             for (String itemCode : itemCodes) {
                 String url = applyUrls.get(itemCode);
                 if (url != null) {
-                    jdbc.update("UPDATE catalog_items SET apply_url = ? WHERE code = ?", url.isBlank() ? null : url, itemCode);
+                    batch.add(new Object[]{url.isBlank() ? null : url, itemCode});
                 }
+            }
+            if (!batch.isEmpty()) {
+                jdbc.batchUpdate("UPDATE catalog_items SET apply_url = ? WHERE code = ?", batch);
             }
         }
         return getProvider(code);
@@ -77,13 +112,20 @@ public class FdAdminService {
                 """);
     }
 
+    @Transactional
     public Map<String, Object> updateFdCard(String code, String applyUrl, Boolean active) {
         if (applyUrl != null) {
             jdbc.update("UPDATE catalog_items SET apply_url = ? WHERE code = ? AND category_code = 'FD_CARD'",
                     applyUrl.isBlank() ? null : applyUrl, code);
         }
         if (active != null) {
-            jdbc.update("UPDATE catalog_items SET active = ? WHERE code = ? AND category_code = 'FD_CARD'", active, code);
+            int n = jdbc.update("""
+                    UPDATE catalog_items SET active = ?
+                     WHERE code = ? AND category_code = 'FD_CARD'
+                    """, active, code);
+            if (n == 0) {
+                throw ApiException.of(HttpStatus.NOT_FOUND, "CARD_NOT_FOUND", "FD card not found");
+            }
         }
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 SELECT i.code, i.name, i.product_key, i.provider, i.rail, i.apply_url, i.active, i.sort_order,
@@ -158,12 +200,12 @@ public class FdAdminService {
     public List<Map<String, Object>> replaceBudgetBands(List<BudgetBandInput> bands) {
         validateBands(bands);
         jdbc.update("DELETE FROM fd_budget_bands");
-        for (BudgetBandInput band : bands) {
-            jdbc.update("""
-                    INSERT INTO fd_budget_bands (slab_min, slab_max, preferred_provider, preference_rank)
-                    VALUES (0, 0, ?, ?)
-                    """, band.preferredProvider(), band.preferenceRank());
-        }
+        jdbc.batchUpdate("""
+                INSERT INTO fd_budget_bands (slab_min, slab_max, preferred_provider, preference_rank)
+                VALUES (0, 0, ?, ?)
+                """, bands.stream()
+                .map(band -> new Object[]{band.preferredProvider(), band.preferenceRank()})
+                .toList());
         return listBudgetBands();
     }
 
@@ -297,7 +339,10 @@ public class FdAdminService {
         if (rules.isEmpty()) {
             return Map.of();
         }
-        Map<String, Object> rule = new LinkedHashMap<>(rules.get(0));
+        return decorateRule(new LinkedHashMap<>(rules.get(0)));
+    }
+
+    private Map<String, Object> decorateRule(Map<String, Object> rule) {
         BigDecimal received = decimal(rule.get("flat_fee"));
         BigDecimal retailer = decimal(rule.get("retailer_amount"));
         BigDecimal distributor = decimal(rule.get("distributor_amount"));

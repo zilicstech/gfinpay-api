@@ -34,9 +34,23 @@ public class AdminAccess {
         return me().superAdmin();
     }
 
+    public boolean platformAdmin() {
+        return me().platformAdmin();
+    }
+
+    public boolean superAdminOrPlatformAdmin() {
+        return me().superAdminOrPlatformAdmin();
+    }
+
     public void requireSuperAdmin() {
         if (!superAdmin()) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Only a super admin can do this");
+        }
+    }
+
+    public void requireSuperAdminOrPlatformAdmin() {
+        if (!superAdminOrPlatformAdmin()) {
+            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Only super admin or platform admin can do this");
         }
     }
 
@@ -46,9 +60,9 @@ public class AdminAccess {
         }
     }
 
-    /** null = unrestricted (super admin); otherwise assigned hub ids. */
+    /** null = unrestricted (super admin or platform admin); otherwise assigned hub ids. */
     public List<UUID> hubIdsOrNull() {
-        if (superAdmin()) {
+        if (superAdminOrPlatformAdmin()) {
             return null;
         }
         if (!me().hubAdmin()) {
@@ -73,7 +87,7 @@ public class AdminAccess {
         if (userId != null && userId.equals(me().userId())) {
             return;
         }
-        if (superAdmin()) {
+        if (superAdminOrPlatformAdmin()) {
             return;
         }
         Map<String, Object> row;
@@ -86,7 +100,7 @@ public class AdminAccess {
         String type = String.valueOf(row.get("user_type"));
         UUID hubId = (UUID) row.get("hub_id");
         UUID parentId = (UUID) row.get("parent_id");
-        if ("SUPER_ADMIN".equals(type) || "ADMIN".equals(type)) {
+        if ("SUPER_ADMIN".equals(type) || "ADMIN".equals(type) || "HUBADMIN".equals(type) || "AUDITOR".equals(type)) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
         }
         if ("MASTER_DISTRIBUTOR".equals(me().userType())) {

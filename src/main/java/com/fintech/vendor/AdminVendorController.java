@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.UUID;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -31,6 +32,8 @@ public class AdminVendorController {
             String email,
             @NotNull UUID hubId) {}
 
+    public record StatusRequest(@NotBlank String status) {}
+
     @GetMapping
     @PreAuthorize("hasAuthority('users.onboard')")
     public ApiResponse<List<Map<String, Object>>> list() {
@@ -47,5 +50,11 @@ public class AdminVendorController {
     @PreAuthorize("hasAuthority('users.onboard')")
     public ApiResponse<Map<String, Object>> create(@Valid @RequestBody CreateVendorRequest req) {
         return ApiResponse.ok(vendors.create(req.fullName(), req.mobile(), req.email(), req.hubId()));
+    }
+
+    @PatchMapping("/{id}/status")
+    @PreAuthorize("hasAuthority('users.onboard')")
+    public ApiResponse<Map<String, Object>> updateStatus(@PathVariable UUID id, @Valid @RequestBody StatusRequest req) {
+        return ApiResponse.ok(vendors.updateStatus(id, req.status()));
     }
 }

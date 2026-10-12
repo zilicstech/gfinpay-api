@@ -1,10 +1,18 @@
 package com.fintech.identity;
 
+import com.fintech.finance.FinanceService;
 import com.fintech.ledger.LedgerService;
 import com.fintech.ledger.TransactionService;
 import com.fintech.ledger.WalletService;
+import com.fintech.persistence.config.PlatformServiceRepository;
+import com.fintech.persistence.finance.AgentKycProfileRepository;
+import com.fintech.persistence.identity.UserRepository;
+import com.fintech.persistence.ledger.WalletRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fintech.platform.security.AuthPrincipal;
+import com.fintech.platform.security.SessionService;
 import com.fintech.platform.web.ApiException;
+import com.fintech.platform.web.PageWindow;
 import com.fintech.recon.ReconJson;
 import com.fintech.reports.DashboardSnapshotService;
 import java.math.BigDecimal;
@@ -39,11 +47,19 @@ public class AdminPlatformService {
     private final AdminAccess access;
     private final DashboardSnapshotService snapshot;
     private final ObjectMapper objectMapper;
+    private final FinanceService finance;
+    private final SessionService sessions;
+    private final UserRepository userRepository;
+    private final WalletRepository walletRepository;
+    private final PlatformServiceRepository platformServices;
+    private final AgentKycProfileRepository kycProfiles;
 
     public AdminPlatformService(JdbcTemplate jdbc, PasswordEncoder passwordEncoder, WalletService walletService,
                                 LedgerService ledgerService, TransactionService transactionService,
                                 AdminAccess access, DashboardSnapshotService snapshot,
-                                ObjectMapper objectMapper) {
+                                ObjectMapper objectMapper, FinanceService finance, SessionService sessions,
+                                UserRepository userRepository, WalletRepository walletRepository,
+                                PlatformServiceRepository platformServices, AgentKycProfileRepository kycProfiles) {
         this.jdbc = jdbc;
         this.passwordEncoder = passwordEncoder;
         this.walletService = walletService;
@@ -52,16 +68,33 @@ public class AdminPlatformService {
         this.access = access;
         this.snapshot = snapshot;
         this.objectMapper = objectMapper;
+        this.finance = finance;
+        this.sessions = sessions;
+        this.userRepository = userRepository;
+        this.walletRepository = walletRepository;
+        this.platformServices = platformServices;
+        this.kycProfiles = kycProfiles;
     }
 
     public List<Map<String, Object>> listHubs() {
         StringBuilder sql = new StringBuilder("""
                 SELECT h.id, h.code, h.name, h.city, h.state, h.status, h.notes, h.created_at, h.created_by,
                        creator.full_name AS created_by_name, creator.code AS created_by_code,
-                       (SELECT count(*) FROM users u WHERE u.hub_id = h.id AND u.user_type = 'MASTER_DISTRIBUTOR') AS distributor_count,
-                       (SELECT count(*) FROM hub_admin_assignments ha WHERE ha.hub_id = h.id) AS admin_count
+                       COALESCE(dist.distributor_count, 0) AS distributor_count,
+                       COALESCE(admins.admin_count, 0) AS admin_count
                   FROM hubs h
                   LEFT JOIN users creator ON creator.id = h.created_by
+                  LEFT JOIN (
+                        SELECT hub_id, count(*) AS distributor_count
+                          FROM users
+                         WHERE user_type = 'MASTER_DISTRIBUTOR'
+                         GROUP BY hub_id
+                  ) dist ON dist.hub_id = h.id
+                  LEFT JOIN (
+                        SELECT hub_id, count(*) AS admin_count
+                          FROM hub_admin_assignments
+                         GROUP BY hub_id
+                  ) admins ON admins.hub_id = h.id
                  WHERE 1=1
                 """);
         List<Object> args = new ArrayList<>();
@@ -76,31 +109,37 @@ public class AdminPlatformService {
         }
         StringBuilder sql = new StringBuilder("""
                 SELECT h.id, h.code, h.name, h.city, h.state, h.status,
-                       (SELECT count(*) FROM users d
-                         WHERE d.hub_id = h.id AND d.user_type = 'MASTER_DISTRIBUTOR') AS distributors,
-                       (SELECT count(*) FROM users d
-                         WHERE d.hub_id = h.id AND d.user_type = 'MASTER_DISTRIBUTOR' AND d.status = 'ACTIVE') AS distributors_active,
-                       (SELECT count(*) FROM users r
-                         WHERE r.hub_id = h.id AND r.user_type = 'RETAILER') AS retailers,
-                       (SELECT count(*) FROM users r
-                         WHERE r.hub_id = h.id AND r.user_type = 'RETAILER' AND r.status = 'ACTIVE') AS retailers_active,
-                       (SELECT count(*) FROM customers c
-                          JOIN users u ON u.id = c.retailer_user_id
-                         WHERE u.hub_id = h.id) AS customers,
-                       (SELECT count(*) FROM customers c
-                          JOIN users u ON u.id = c.retailer_user_id
-                         WHERE u.hub_id = h.id AND c.ekyc_status = 'VERIFIED') AS customers_ekyc,
-                       (SELECT COALESCE(sum(w.available_balance + w.hold_balance), 0)
-                          FROM wallets w JOIN users u ON u.id = w.user_id
-                         WHERE u.hub_id = h.id
-                           AND u.user_type IN ('MASTER_DISTRIBUTOR', 'RETAILER')) AS wallet_float,
-                       (SELECT COALESCE(sum(t.amount), 0)
-                          FROM transactions t JOIN users u ON u.id = t.agent_user_id
-                         WHERE u.hub_id = h.id AND t.state = 'SUCCESS') AS gmv,
-                       (SELECT count(*) FROM sales_leads l
-                          JOIN users u ON u.id = l.retailer_user_id
-                         WHERE u.hub_id = h.id) AS sales
+                       COALESCE(hu.distributors, 0) AS distributors,
+                       COALESCE(hu.distributors_active, 0) AS distributors_active,
+                       COALESCE(hu.retailers, 0) AS retailers,
+                       COALESCE(hu.retailers_active, 0) AS retailers_active,
+                       COALESCE(hc.customers, 0) AS customers,
+                       COALESCE(hc.customers_ekyc, 0) AS customers_ekyc,
+                       COALESCE(hs.sales, 0) AS sales
                   FROM hubs h
+                  LEFT JOIN (
+                        SELECT hub_id,
+                               count(*) FILTER (WHERE user_type = 'MASTER_DISTRIBUTOR') AS distributors,
+                               count(*) FILTER (WHERE user_type = 'MASTER_DISTRIBUTOR' AND status = 'ACTIVE') AS distributors_active,
+                               count(*) FILTER (WHERE user_type = 'RETAILER') AS retailers,
+                               count(*) FILTER (WHERE user_type = 'RETAILER' AND status = 'ACTIVE') AS retailers_active
+                          FROM users
+                         GROUP BY hub_id
+                  ) hu ON hu.hub_id = h.id
+                  LEFT JOIN (
+                        SELECT u.hub_id,
+                               count(*) AS customers,
+                               count(*) FILTER (WHERE c.ekyc_status = 'VERIFIED') AS customers_ekyc
+                          FROM customers c
+                          JOIN users u ON u.id = c.retailer_user_id
+                         GROUP BY u.hub_id
+                  ) hc ON hc.hub_id = h.id
+                  LEFT JOIN (
+                        SELECT u.hub_id, count(*) AS sales
+                          FROM sales_leads l
+                          JOIN users u ON u.id = l.retailer_user_id
+                         GROUP BY u.hub_id
+                  ) hs ON hs.hub_id = h.id
                  WHERE 1=1
                 """);
         List<Object> args = new ArrayList<>();
@@ -124,8 +163,6 @@ public class AdminPlatformService {
         long retailersActive = 0;
         long customers = 0;
         long customersEkyc = 0;
-        BigDecimal wallet = BigDecimal.ZERO;
-        BigDecimal gmv = BigDecimal.ZERO;
         long sales = 0;
         for (Map<String, Object> hub : hubs) {
             distributors += asLong(hub.get("distributors"));
@@ -134,8 +171,6 @@ public class AdminPlatformService {
             retailersActive += asLong(hub.get("retailers_active"));
             customers += asLong(hub.get("customers"));
             customersEkyc += asLong(hub.get("customers_ekyc"));
-            wallet = wallet.add(asDecimal(hub.get("wallet_float")));
-            gmv = gmv.add(asDecimal(hub.get("gmv")));
             sales += asLong(hub.get("sales"));
         }
         Map<String, Object> totals = new LinkedHashMap<>();
@@ -147,8 +182,6 @@ public class AdminPlatformService {
         totals.put("customers", customers);
         totals.put("customers_ekyc", customersEkyc);
         totals.put("kyc_pending", kycPending == null ? 0 : kycPending);
-        totals.put("wallet_float", wallet);
-        totals.put("gmv", gmv);
         totals.put("sales", sales);
 
         Map<String, Object> out = new LinkedHashMap<>();
@@ -168,19 +201,6 @@ public class AdminPlatformService {
         return Long.parseLong(String.valueOf(value));
     }
 
-    private static BigDecimal asDecimal(Object value) {
-        if (value == null) {
-            return BigDecimal.ZERO;
-        }
-        if (value instanceof BigDecimal d) {
-            return d;
-        }
-        if (value instanceof Number n) {
-            return BigDecimal.valueOf(n.doubleValue());
-        }
-        return new BigDecimal(String.valueOf(value));
-    }
-
     public Map<String, Object> getHub(UUID id) {
         access.assertHub(id);
         Map<String, Object> hub = one("""
@@ -192,12 +212,12 @@ public class AdminPlatformService {
                  WHERE h.id = ?
                 """, id, "HUB_NOT_FOUND", "Hub does not exist");
         hub.put("distributors", jdbc.queryForList("""
-                SELECT u.id, u.full_name, u.mobile, u.status::text AS status, u.created_at
+                SELECT u.id, u.code, u.full_name, u.mobile, u.status::text AS status, u.created_at
                   FROM users u WHERE u.hub_id = ? AND u.user_type = 'MASTER_DISTRIBUTOR'
                  ORDER BY u.full_name
                 """, id));
         hub.put("admins", jdbc.queryForList("""
-                SELECT u.id, u.full_name, u.mobile, u.email, u.status::text AS status, u.created_at
+                SELECT u.id, u.code, u.full_name, u.mobile, u.email, u.status::text AS status, u.created_at
                   FROM hub_admin_assignments ha
                   JOIN users u ON u.id = ha.user_id
                  WHERE ha.hub_id = ?
@@ -207,7 +227,7 @@ public class AdminPlatformService {
     }
 
     public List<Map<String, Object>> distributorDirectory(UUID hubId) {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
         requireActiveHub(hubId);
         return jdbc.queryForList("""
                 SELECT u.id, u.full_name, u.mobile, u.status::text AS status,
@@ -221,7 +241,7 @@ public class AdminPlatformService {
     }
 
     public List<Map<String, Object>> adminDirectory(UUID hubId) {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
         requireActiveHub(hubId);
         return jdbc.queryForList("""
                 SELECT u.id, u.full_name, u.mobile, u.email, u.status::text AS status,
@@ -236,61 +256,54 @@ public class AdminPlatformService {
                             WHERE ha2.hub_id = ? AND ha2.user_id = u.id
                        ) AS assigned_here
                   FROM users u
-                 WHERE u.user_type = 'ADMIN'
+                 WHERE u.user_type = 'HUBADMIN'
                  ORDER BY u.full_name
                 """, hubId);
     }
 
     @Transactional
     public Map<String, Object> assignDistributorsToHub(UUID hubId, List<UUID> userIds) {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
         requireActiveHub(hubId);
         if (userIds == null || userIds.isEmpty()) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "USERS_REQUIRED", "Select at least one distributor");
         }
-        int assigned = 0;
-        for (UUID userId : userIds) {
-            String type = jdbc.queryForObject("SELECT user_type::text FROM users WHERE id = ?", String.class, userId);
-            if (!"MASTER_DISTRIBUTOR".equals(type)) {
-                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_USER",
-                        "Only distributors can be assigned to a hub");
-            }
-            assignHub(userId, hubId);
-            assigned++;
+        List<UUID> ids = new ArrayList<>(new java.util.LinkedHashSet<>(userIds));
+        if (userRepository.countByIdsAndType(ids, "MASTER_DISTRIBUTOR") != ids.size()) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_USER",
+                    "Only distributors can be assigned to a hub");
         }
-        log.info("HUB_ASSIGN_DIST hubId={} count={}", hubId, assigned);
+        userRepository.assignHub(ids, hubId);
+        userRepository.moveRetailersWithParents(ids, hubId);
+        log.info("HUB_ASSIGN_DIST hubId={} count={}", hubId, ids.size());
         return getHub(hubId);
     }
 
     @Transactional
     public Map<String, Object> assignAdminsToHub(UUID hubId, List<UUID> userIds) {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
         requireActiveHub(hubId);
         if (userIds == null || userIds.isEmpty()) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "USERS_REQUIRED", "Select at least one admin");
         }
-        for (UUID userId : userIds) {
-            String type = jdbc.queryForObject("SELECT user_type::text FROM users WHERE id = ?", String.class, userId);
-            if (!"ADMIN".equals(type)) {
-                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_USER",
-                        "Only hub admins can be assigned");
-            }
-            jdbc.update("""
-                    INSERT INTO hub_admin_assignments (hub_id, user_id)
-                    VALUES (?, ?)
-                    ON CONFLICT (hub_id, user_id) DO NOTHING
-                    """, hubId, userId);
-            jdbc.update("""
-                    UPDATE users SET hub_id = COALESCE(hub_id, ?), updated_at = now() WHERE id = ?
-                    """, hubId, userId);
+        List<UUID> ids = new ArrayList<>(new java.util.LinkedHashSet<>(userIds));
+        if (userRepository.countByIdsAndType(ids, "HUBADMIN") != ids.size()) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_USER",
+                    "Only hub admins can be assigned");
         }
-        log.info("HUB_ASSIGN_ADMIN hubId={} count={}", hubId, userIds.size());
+        jdbc.batchUpdate("""
+                INSERT INTO hub_admin_assignments (hub_id, user_id)
+                VALUES (?, ?)
+                ON CONFLICT (hub_id, user_id) DO NOTHING
+                """, ids.stream().map(id -> new Object[]{hubId, id}).toList());
+        userRepository.assignHubIfMissing(ids, hubId);
+        log.info("HUB_ASSIGN_ADMIN hubId={} count={}", hubId, ids.size());
         return getHub(hubId);
     }
 
     @Transactional
     public Map<String, Object> createHub(String name, String city, String state, String notes) {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
         UUID id = UUID.randomUUID();
         String code = generateHubCode();
         try {
@@ -345,7 +358,7 @@ public class AdminPlatformService {
 
     @Transactional
     public Map<String, Object> updateHub(UUID id, String name, String city, String state, String notes, String status) {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
         int n = jdbc.update("""
                 UPDATE hubs SET name = COALESCE(?, name), city = COALESCE(?, city), state = COALESCE(?, state),
                        notes = COALESCE(?, notes), status = COALESCE(?, status), updated_at = now()
@@ -366,8 +379,8 @@ public class AdminPlatformService {
 
     @Transactional
     public Map<String, Object> setServiceEnabled(String code, boolean enabled) {
-        access.requireSuperAdmin();
-        int n = jdbc.update("UPDATE platform_services SET enabled = ?, updated_at = now() WHERE code = ?", enabled, code);
+        access.requireSuperAdminOrPlatformAdmin();
+        int n = platformServices.updateEnabled(code, enabled);
         if (n == 0) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "SERVICE_NOT_FOUND", "Unknown service code");
         }
@@ -375,20 +388,35 @@ public class AdminPlatformService {
     }
 
     public List<Map<String, Object>> listUsers(String userType) {
-        if ("ADMIN".equals(userType) || "SUPER_ADMIN".equals(userType)) {
-            access.requireSuperAdmin();
+        return listUsers(userType, PageWindow.DEFAULT_LIMIT, 0);
+    }
+
+    public List<Map<String, Object>> listUsers(String userType, int limit, int offset) {
+        if ("ADMIN".equals(userType) || "HUBADMIN".equals(userType) || "SUPER_ADMIN".equals(userType)
+                || "AUDITOR".equals(userType) || "ALL_ADMINS".equals(userType)) {
+            access.requireSuperAdminOrPlatformAdmin();
         }
         StringBuilder sql = new StringBuilder(userListSql(null));
         List<Object> args = new ArrayList<>();
         sql.append(" WHERE 1=1 ");
-        if (userType != null && !userType.isBlank()) {
+        if ("ALL_ADMINS".equals(userType)) {
+            sql.append(" AND u.user_type IN ('SUPER_ADMIN', 'ADMIN', 'HUBADMIN') ");
+        } else if ("ADMIN".equals(userType) || "SUPER_ADMIN".equals(userType)) {
+            access.requireSuperAdminOrPlatformAdmin();
             sql.append(" AND u.user_type = ? ");
             args.add(userType);
+        } else if (userType != null && !userType.isBlank()) {
+            sql.append(" AND u.user_type = ? ");
+            args.add(userType);
+        } else if (!access.superAdminOrPlatformAdmin()) {
+            sql.append(" AND u.user_type NOT IN ('SUPER_ADMIN', 'ADMIN') ");
         }
         if ("MASTER_DISTRIBUTOR".equals(userType) || "RETAILER".equals(userType) || userType == null || userType.isBlank()) {
             access.appendHubFilter(sql, args, "u.hub_id");
         }
-        sql.append(" ORDER BY u.created_at DESC");
+        sql.append(" ORDER BY u.created_at DESC LIMIT ? OFFSET ?");
+        args.add(PageWindow.limit(limit));
+        args.add(PageWindow.offset(offset));
         return jdbc.queryForList(sql.toString(), args.toArray());
     }
 
@@ -396,11 +424,53 @@ public class AdminPlatformService {
         Map<String, Object> user = one(userListSql("WHERE u.id = ?"), id, "USER_NOT_FOUND", "User does not exist");
         String type = String.valueOf(user.get("user_type"));
         if (!id.equals(access.me().userId())) {
-            if ("ADMIN".equals(type) || "SUPER_ADMIN".equals(type)) {
-                access.requireSuperAdmin();
+            if ("SUPER_ADMIN".equals(type) || "ADMIN".equals(type)) {
+                access.requireSuperAdminOrPlatformAdmin();
+            } else if ("HUBADMIN".equals(type) || "AUDITOR".equals(type)) {
+                access.requireSuperAdminOrPlatformAdmin();
             } else {
                 access.assertNetworkUser(id);
             }
+        }
+        if ("HUBADMIN".equals(type)) {
+            user.put("assignedHubs", jdbc.queryForList("""
+                    SELECT h.id, h.name, h.code, h.city, h.state, h.status::text AS status,
+                           ha.assigned_at
+                      FROM hub_admin_assignments ha
+                      JOIN hubs h ON h.id = ha.hub_id
+                     WHERE ha.user_id = ?
+                     ORDER BY h.name
+                    """, id));
+            user.put("distributors", jdbc.queryForList("""
+                    SELECT u.id, u.full_name, u.mobile, u.code, u.status::text AS status,
+                           h.name AS hub_name, h.code AS hub_code,
+                           COALESCE(rc.retailer_count, 0) AS retailer_count
+                      FROM users u
+                      JOIN hubs h ON h.id = u.hub_id
+                      LEFT JOIN (
+                            SELECT parent_id, count(*) AS retailer_count
+                              FROM users
+                             WHERE user_type = 'RETAILER'
+                             GROUP BY parent_id
+                      ) rc ON rc.parent_id = u.id
+                     WHERE u.user_type = 'MASTER_DISTRIBUTOR'
+                       AND u.hub_id IN (
+                           SELECT hub_id FROM hub_admin_assignments WHERE user_id = ?
+                           UNION
+                           SELECT hub_id FROM users WHERE id = ? AND hub_id IS NOT NULL
+                       )
+                     ORDER BY u.full_name
+                    """, id, id));
+        }
+        if ("ADMIN".equals(type) || "SUPER_ADMIN".equals(type)) {
+            Integer hubCount = jdbc.queryForObject("SELECT count(*)::int FROM hubs", Integer.class);
+            Integer distCount = jdbc.queryForObject("SELECT count(*)::int FROM users WHERE user_type = 'MASTER_DISTRIBUTOR'", Integer.class);
+            Integer retCount = jdbc.queryForObject("SELECT count(*)::int FROM users WHERE user_type = 'RETAILER'", Integer.class);
+            user.put("platformStats", Map.of(
+                    "totalHubs", hubCount != null ? hubCount : 0,
+                    "totalDistributors", distCount != null ? distCount : 0,
+                    "totalRetailers", retCount != null ? retCount : 0
+            ));
         }
         if ("MASTER_DISTRIBUTOR".equals(type)) {
             user.put("retailers", jdbc.queryForList("""
@@ -422,7 +492,7 @@ public class AdminPlatformService {
                         "walletId", w.walletId(),
                         "availableBalance", w.available(),
                         "holdBalance", w.hold(),
-                        "status", jdbc.queryForObject("SELECT status FROM wallets WHERE user_id = ?", String.class, id)));
+                        "status", w.status()));
             } catch (ApiException e) {
                 user.put("wallet", null);
             }
@@ -434,6 +504,9 @@ public class AdminPlatformService {
         if ("RETAILER".equals(type) || "MASTER_DISTRIBUTOR".equals(type)) {
             user.put("kyc", loadAgentKyc(id));
         }
+        if ("RETAILER".equals(type)) {
+            user.put("activation", finance.activationSummary(id));
+        }
         return user;
     }
 
@@ -442,7 +515,7 @@ public class AdminPlatformService {
                                                  UUID hubId, UUID adminId) {
         access.assertHub(hubId);
         requireActiveHub(hubId);
-        return createUser("MASTER_DISTRIBUTOR", 2, fullName, mobile, email, password, adminId, adminId, hubId,
+        return createUser("MASTER_DISTRIBUTOR", fullName, mobile, email, password, adminId, adminId, hubId,
                 null, null, null);
     }
 
@@ -463,17 +536,45 @@ public class AdminPlatformService {
                     "Cannot place a retailer under a suspended distributor");
         }
         UUID hubId = (UUID) parent.get("hub_id");
-        access.assertHub(hubId);
-        return createUser("RETAILER", 3, fullName, mobile, email, password, distributorId, adminId, hubId,
+        if (hubId == null) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "HUB_REQUIRED",
+                    "This distributor is not assigned to a hub");
+        }
+        AuthPrincipal caller = access.me();
+        boolean ownNetwork = caller.userId().equals(distributorId)
+                && "MASTER_DISTRIBUTOR".equals(caller.userType());
+        if (!ownNetwork) {
+            access.assertHub(hubId);
+        }
+        return createUser("RETAILER", fullName, mobile, email, password, distributorId, adminId, hubId,
                 city, state, pincode);
     }
 
     @Transactional
     public Map<String, Object> createHubAdmin(String fullName, String mobile, String email, String password,
                                               UUID hubId, UUID createdBy) {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
+        if (hubId == null) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "HUB_REQUIRED", "Hub is required for Hub Admin");
+        }
         requireActiveHub(hubId);
-        return createUser("ADMIN", 4, fullName, mobile, email, password, createdBy, createdBy, hubId,
+        return createUser("HUBADMIN", fullName, mobile, email, password, createdBy, createdBy, hubId,
+                null, null, null);
+    }
+
+    @Transactional
+    public Map<String, Object> createPlatformAdmin(String fullName, String mobile, String email, String password,
+                                                   UUID createdBy) {
+        access.requireSuperAdmin();
+        return createUser("ADMIN", fullName, mobile, email, password, createdBy, createdBy, null,
+                null, null, null);
+    }
+
+    @Transactional
+    public Map<String, Object> createAuditor(String fullName, String mobile, String email, String password,
+                                             UUID createdBy) {
+        access.requireSuperAdminOrPlatformAdmin();
+        return createUser("AUDITOR", fullName, mobile, email, password, createdBy, createdBy, null,
                 null, null, null);
     }
 
@@ -481,15 +582,32 @@ public class AdminPlatformService {
     public Map<String, Object> updateStatus(UUID userId, String status) {
         access.assertNetworkUser(userId);
         String type = jdbc.queryForObject("SELECT user_type::text FROM users WHERE id = ?", String.class, userId);
-        if ("ADMIN".equals(type) || "SUPER_ADMIN".equals(type)) {
-            access.requireSuperAdmin();
+        if ("SUPER_ADMIN".equals(type)) {
+            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Super admin status cannot be changed");
         }
-        if (!List.of("ACTIVE", "SUSPENDED", "TERMINATED", "PENDING_KYC").contains(status)) {
+        if ("ADMIN".equals(type)) {
+            access.requireSuperAdminOrPlatformAdmin();
+        } else if ("HUBADMIN".equals(type) || "AUDITOR".equals(type)) {
+            access.requireSuperAdminOrPlatformAdmin();
+        }
+        if (!List.of("ACTIVE", "INACTIVE", "SUSPENDED", "TERMINATED", "PENDING", "SUBMITTED", "APPROVED", "REJECTED",
+                "PENDING_KYC", "PENDING_ACTIVATION").contains(status)) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_STATUS", "Unknown status");
         }
-        int n = jdbc.update("UPDATE users SET status = ?, updated_at = now() WHERE id = ?", status, userId);
+        if ("RETAILER".equals(type) && "ACTIVE".equals(status)) {
+            String current = jdbc.queryForObject("SELECT status::text FROM users WHERE id = ?", String.class, userId);
+            boolean restoring = "SUSPENDED".equals(current);
+            if (!restoring && (!"APPROVED".equals(current) || !finance.hasReceivedActivation(userId))) {
+                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "ACTIVATION_NOT_APPROVED",
+                        "The auditor must approve the activation request before this retailer can go live");
+            }
+        }
+        int n = userRepository.updateStatus(userId, status);
         if (n == 0) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User does not exist");
+        }
+        if (!UserService.canAuthenticate(type, status)) {
+            sessions.revokeAllForUser(userId, "STATUS_CHANGE");
         }
         log.info("USER_STATUS userId={} status={}", userId, status);
         return getUser(userId);
@@ -497,7 +615,7 @@ public class AdminPlatformService {
 
     @Transactional
     public Map<String, Object> assignHub(UUID userId, UUID hubId) {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
         requireActiveHub(hubId);
         String type;
         try {
@@ -505,7 +623,10 @@ public class AdminPlatformService {
         } catch (EmptyResultDataAccessException e) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User does not exist");
         }
-        if ("ADMIN".equals(type)) {
+        if ("ADMIN".equals(type) || "HUBADMIN".equals(type)) {
+            if ("ADMIN".equals(type)) {
+                access.requireSuperAdminOrPlatformAdmin();
+            }
             jdbc.update("""
                     INSERT INTO hub_admin_assignments (hub_id, user_id)
                     VALUES (?, ?)
@@ -546,14 +667,19 @@ public class AdminPlatformService {
     public Map<String, Object> resetPassword(UUID userId, String password) {
         access.assertNetworkUser(userId);
         String type = jdbc.queryForObject("SELECT user_type::text FROM users WHERE id = ?", String.class, userId);
-        if ("ADMIN".equals(type) || "SUPER_ADMIN".equals(type)) {
-            access.requireSuperAdmin();
+        if ("SUPER_ADMIN".equals(type) && !userId.equals(access.me().userId())) {
+            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Cannot reset super admin password");
         }
-        int n = jdbc.update("UPDATE users SET password_hash = ?, updated_at = now() WHERE id = ?",
-                passwordEncoder.encode(password), userId);
+        if ("ADMIN".equals(type) && !userId.equals(access.me().userId())) {
+            access.requireSuperAdminOrPlatformAdmin();
+        } else if ("HUBADMIN".equals(type) || "AUDITOR".equals(type)) {
+            access.requireSuperAdminOrPlatformAdmin();
+        }
+        int n = userRepository.updatePassword(userId, passwordEncoder.encode(password));
         if (n == 0) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User does not exist");
         }
+        sessions.revokeAllForUser(userId, "ADMIN_RESET");
         return Map.of("id", userId, "reset", true);
     }
 
@@ -561,7 +687,7 @@ public class AdminPlatformService {
     public Map<String, Object> setWalletFrozen(UUID userId, boolean frozen) {
         access.assertNetworkUser(userId);
         String status = frozen ? "FROZEN" : "ACTIVE";
-        int n = jdbc.update("UPDATE wallets SET status = ?, updated_at = now() WHERE user_id = ?", status, userId);
+        int n = walletRepository.updateStatus(userId, status, !frozen);
         if (n == 0) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "WALLET_NOT_FOUND", "No wallet for this user");
         }
@@ -582,18 +708,14 @@ public class AdminPlatformService {
                 null, null, "ADMIN", null);
         String note = narration == null || narration.isBlank() ? "Admin wallet adjustment" : narration;
         if ("CREDIT".equals(direction)) {
-            ledgerService.postGroup(txnId, List.of(
-                    LedgerService.Entry.debit(LedgerService.PLATFORM_SETTLEMENT, amount, note),
-                    LedgerService.Entry.credit(wallet.availableAccountId(), amount, note)));
+            ledgerService.post(txnId, wallet.walletId(), "CREDIT", amount, note);
             walletService.adjustCache(wallet.walletId(), amount, BigDecimal.ZERO);
         } else {
             if (wallet.available().compareTo(amount) < 0) {
                 throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INSUFFICIENT_BALANCE",
                         "Available float is less than the debit");
             }
-            ledgerService.postGroup(txnId, List.of(
-                    LedgerService.Entry.debit(wallet.availableAccountId(), amount, note),
-                    LedgerService.Entry.credit(LedgerService.PLATFORM_SETTLEMENT, amount, note)));
+            ledgerService.post(txnId, wallet.walletId(), "DEBIT", amount, note);
             walletService.adjustCache(wallet.walletId(), amount.negate(), BigDecimal.ZERO);
         }
         transactionService.transition(txnId, "SUCCESS", null, null);
@@ -602,6 +724,10 @@ public class AdminPlatformService {
     }
 
     public List<Map<String, Object>> listKyc() {
+        return listKyc(null, null, PageWindow.DEFAULT_LIMIT, 0);
+    }
+
+    public List<Map<String, Object>> listKyc(UUID distributorId, UUID userId, int limit, int offset) {
         StringBuilder sql = new StringBuilder("""
                 SELECT k.user_id, u.full_name, u.mobile, u.status::text AS user_status,
                        k.shop_name, k.kyc_status::text AS kyc_status, k.rejection_reason,
@@ -614,7 +740,17 @@ public class AdminPlatformService {
                 """);
         List<Object> args = new ArrayList<>();
         access.appendHubFilter(sql, args, "u.hub_id");
-        sql.append(" ORDER BY k.updated_at DESC");
+        if (distributorId != null) {
+            sql.append(" AND u.parent_id = ? ");
+            args.add(distributorId);
+        }
+        if (userId != null) {
+            sql.append(" AND k.user_id = ? ");
+            args.add(userId);
+        }
+        sql.append(" ORDER BY k.updated_at DESC LIMIT ? OFFSET ?");
+        args.add(PageWindow.limit(limit));
+        args.add(PageWindow.offset(offset));
         return jdbc.queryForList(sql.toString(), args.toArray());
     }
 
@@ -640,20 +776,9 @@ public class AdminPlatformService {
         if (!"VERIFIED".equals(decision) && !"REJECTED".equals(decision)) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_DECISION", "Decision must be VERIFIED or REJECTED");
         }
-        int n = jdbc.update("""
-                UPDATE agent_kyc_profiles
-                   SET kyc_status = ?,
-                       rejection_reason = ?,
-                       updated_at = now()
-                 WHERE user_id = ?
-                """, decision, reason, userId);
+        int n = kycProfiles.updateStatus(userId, decision, reason);
         if (n == 0) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "KYC_NOT_FOUND", "No KYC profile for this outlet");
-        }
-        if ("VERIFIED".equals(decision)) {
-            jdbc.update("UPDATE users SET status = 'ACTIVE', updated_at = now() WHERE id = ?", userId);
-        } else {
-            jdbc.update("UPDATE users SET status = 'PENDING_KYC', updated_at = now() WHERE id = ?", userId);
         }
         return getKyc(userId);
     }
@@ -719,7 +844,7 @@ public class AdminPlatformService {
     }
 
     public List<Map<String, Object>> listRecon() {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
         return jdbc.queryForList("""
                 SELECT id, provider, business_date, mis_file_uri, total_rows, matched_rows,
                        unidentified_rows, status_counts, status, started_at, finished_at
@@ -729,7 +854,11 @@ public class AdminPlatformService {
     }
 
     public Map<String, Object> getRecon(UUID id) {
-        access.requireSuperAdmin();
+        return getRecon(id, PageWindow.DEFAULT_LIMIT, 0);
+    }
+
+    public Map<String, Object> getRecon(UUID id, int limit, int offset) {
+        access.requireSuperAdminOrPlatformAdmin();
         Map<String, Object> batch = one("""
                 SELECT id, provider, business_date, mis_file_uri, total_rows, matched_rows,
                        unidentified_rows, status_counts, status, started_at, finished_at
@@ -749,7 +878,8 @@ public class AdminPlatformService {
                        retailer_label, distributor_label, hub_label,
                        identified, current_status, payload, created_at
                   FROM recon_rows WHERE batch_id = ? ORDER BY created_at, id
-                """, id);
+                 LIMIT ? OFFSET ?
+                """, id, PageWindow.limit(limit), PageWindow.offset(offset));
         for (Map<String, Object> row : rows) {
             row.put("payload", ReconJson.asMap(row.get("payload"), objectMapper));
         }
@@ -762,7 +892,7 @@ public class AdminPlatformService {
 
     @Transactional
     public Map<String, Object> createRecon(String provider, String businessDate) {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
         UUID id = UUID.randomUUID();
         try {
             jdbc.update("""
@@ -779,7 +909,7 @@ public class AdminPlatformService {
 
     @Transactional
     public Map<String, Object> resolveMismatch(long mismatchId, String resolution) {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
         int n = jdbc.update("""
                 UPDATE recon_mismatches SET resolution = ?, resolved_at = now() WHERE id = ?
                 """, resolution, mismatchId);
@@ -790,84 +920,6 @@ public class AdminPlatformService {
         return getRecon(batchId);
     }
 
-    public List<Map<String, Object>> listReportRuns() {
-        access.requireSuperAdmin();
-        return jdbc.queryForList("""
-                SELECT r.id, r.report_type, r.title, r.created_at, u.full_name AS created_by_name
-                  FROM admin_report_runs r
-                  LEFT JOIN users u ON u.id = r.created_by
-                 ORDER BY r.created_at DESC
-                """);
-    }
-
-    public Map<String, Object> getReportRun(UUID id) {
-        access.requireSuperAdmin();
-        return one("""
-                SELECT r.id, r.report_type, r.title, r.payload, r.created_at, u.full_name AS created_by_name
-                  FROM admin_report_runs r
-                  LEFT JOIN users u ON u.id = r.created_by
-                 WHERE r.id = ?
-                """, id, "REPORT_NOT_FOUND", "Report run not found");
-    }
-
-    @Transactional
-    public Map<String, Object> createReportRun(String reportType, String title, UUID createdBy) {
-        access.requireSuperAdmin();
-        Map<String, Object> payload = switch (reportType) {
-            case "EOD" -> snapshotEod();
-            case "GMV" -> snapshotGmv();
-            case "COMMISSIONS" -> snapshotCommissions();
-            case "WALLETS" -> snapshotWallets();
-            default -> throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "UNKNOWN_REPORT",
-                    "Report type must be EOD, GMV, COMMISSIONS or WALLETS");
-        };
-        UUID id = UUID.randomUUID();
-        jdbc.update("""
-                INSERT INTO admin_report_runs (id, report_type, title, payload, created_by)
-                VALUES (?, ?, ?, ?::jsonb, ?)
-                """, id, reportType, title, toJson(payload), createdBy);
-        return getReportRun(id);
-    }
-
-    private Map<String, Object> snapshotEod() {
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("byState", jdbc.queryForList("""
-                SELECT txn_type::text AS txn_type, state::text AS state, count(*) AS count, COALESCE(sum(amount),0) AS amount
-                  FROM transactions GROUP BY txn_type, state ORDER BY txn_type, state
-                """));
-        return out;
-    }
-
-    private Map<String, Object> snapshotGmv() {
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("gmv", jdbc.queryForObject(
-                "SELECT COALESCE(sum(amount),0) FROM transactions WHERE state='SUCCESS'", BigDecimal.class));
-        out.put("byType", jdbc.queryForList("""
-                SELECT txn_type::text AS txn_type, COALESCE(sum(amount),0) AS amount, count(*) AS count
-                  FROM transactions WHERE state='SUCCESS' GROUP BY txn_type
-                """));
-        return out;
-    }
-
-    private Map<String, Object> snapshotCommissions() {
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("byRole", jdbc.queryForList("""
-                SELECT role_in_split, COALESCE(sum(amount),0) AS amount FROM commission_earnings
-                 GROUP BY role_in_split
-                """));
-        return out;
-    }
-
-    private Map<String, Object> snapshotWallets() {
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("rows", jdbc.queryForList("""
-                SELECT u.full_name, u.user_type::text AS user_type, w.available_balance, w.hold_balance, w.status
-                  FROM wallets w JOIN users u ON u.id = w.user_id
-                 ORDER BY (w.available_balance + w.hold_balance) DESC
-                """));
-        return out;
-    }
-
     private String toJson(Map<String, Object> payload) {
         try {
             return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(payload);
@@ -876,7 +928,7 @@ public class AdminPlatformService {
         }
     }
 
-    private Map<String, Object> createUser(String userType, int roleId, String fullName, String mobile,
+    private Map<String, Object> createUser(String userType, String fullName, String mobile,
                                            String email, String password, UUID parentId, UUID createdBy,
                                            UUID hubId, String retailerCity, String retailerState, String retailerPincode) {
         long startMs = System.currentTimeMillis();
@@ -885,24 +937,29 @@ public class AdminPlatformService {
             assertMobileAvailableForOnboard(mobile, userType);
             UUID userId = UUID.randomUUID();
             String outletCode = switch (userType) {
-                case "RETAILER", "MASTER_DISTRIBUTOR", "SUPER_ADMIN", "ADMIN" -> generateGfinCode(
+                case "RETAILER", "MASTER_DISTRIBUTOR", "SUPER_ADMIN", "ADMIN", "HUBADMIN", "AUDITOR" -> generateGfinCode(
                         "USER_CODE_EXHAUSTED", "Could not generate a unique user code");
                 default -> null;
             };
+            String status = "RETAILER".equals(userType) ? "PENDING" : "ACTIVE";
+            String mail = email == null || email.isBlank() ? null : email.trim().toLowerCase();
+            if ("RETAILER".equals(userType) && (mail == null || !mail.matches("[^@\\s]+@[^@\\s]+\\.[^@\\s]+"))) {
+                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "EMAIL_REQUIRED",
+                        "A valid email is required to onboard a retailer");
+            }
             jdbc.update("""
                     INSERT INTO users (id, user_type, parent_id, created_by, full_name, mobile, email, password_hash, status, hub_id, code)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
-                    """, userId, userType, parentId, createdBy, fullName, mobile, email,
-                    passwordEncoder.encode(password), hubId, outletCode);
-            jdbc.update("INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)", userId, roleId);
-            if ("ADMIN".equals(userType) && hubId != null) {
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, userId, userType, parentId, createdBy, fullName, mobile, mail,
+                    passwordEncoder.encode(password), status, hubId, outletCode);
+            if (("ADMIN".equals(userType) || "HUBADMIN".equals(userType)) && hubId != null) {
                 jdbc.update("""
                         INSERT INTO hub_admin_assignments (hub_id, user_id)
                         VALUES (?, ?)
                         ON CONFLICT (hub_id, user_id) DO NOTHING
                         """, hubId, userId);
             }
-            if (!"SUPER_ADMIN".equals(userType) && !"ADMIN".equals(userType)) {
+            if (!"SUPER_ADMIN".equals(userType) && !"ADMIN".equals(userType) && !"HUBADMIN".equals(userType) && !"AUDITOR".equals(userType)) {
                 walletService.createForUser(userId);
             }
             if ("MASTER_DISTRIBUTOR".equals(userType)) {
@@ -961,6 +1018,10 @@ public class AdminPlatformService {
             return ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "RETAILER_ALREADY_EXISTS",
                     "Retailer already exists");
         }
+        if ("AUDITOR".equals(intendedUserType)) {
+            return ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "AUDITOR_ALREADY_EXISTS",
+                    "Auditor already exists");
+        }
         return ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "MOBILE_ALREADY_REGISTERED",
                 "This mobile number is already registered");
     }
@@ -992,6 +1053,7 @@ public class AdminPlatformService {
         List<Map<String, Object>> kyc = jdbc.queryForList("""
                 SELECT shop_name, gstin, kyc_status::text AS kyc_status, rejection_reason,
                        ovd_type, aadhaar_last4, aadhaar_verified_at, pan_verified_at, created_at,
+                       paysprint_onboard_issued_at,
                        shop_address->>'city' AS city,
                        shop_address->>'state' AS state,
                        shop_address->>'pincode' AS pincode
@@ -1006,6 +1068,15 @@ public class AdminPlatformService {
                        u.status::text AS status, u.created_at, u.parent_id, u.hub_id, u.created_by,
                        p.full_name AS parent_name, c.full_name AS created_by_name, c.code AS created_by_code,
                        h.name AS hub_name, h.code AS hub_code,
+                       COALESCE((
+                           SELECT string_agg(DISTINCT h2.name, ', ' ORDER BY h2.name)
+                             FROM hubs h2
+                            WHERE h2.id = u.hub_id
+                               OR EXISTS (
+                                   SELECT 1 FROM hub_admin_assignments ha3
+                                    WHERE ha3.hub_id = h2.id AND ha3.user_id = u.id
+                               )
+                       ), h.name, '') AS hub_names,
                        k.shop_name, k.kyc_status::text AS kyc_status,
                        k.shop_address->>'city' AS retailer_city,
                        k.shop_address->>'state' AS retailer_state,

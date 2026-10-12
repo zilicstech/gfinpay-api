@@ -42,7 +42,7 @@ public class SalesAdminReportHandler implements AdminReportHandler {
 
     @Override
     public Map<String, Object> filters() {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("saleTypes", jdbc.queryForList("""
                 SELECT code, name FROM catalog_categories ORDER BY sort_order, name
@@ -53,7 +53,7 @@ public class SalesAdminReportHandler implements AdminReportHandler {
                 Map.of("code", "GROWMORE", "name", "GrowMore"),
                 Map.of("code", "OTHERS", "name", "Others")));
         out.put("statuses", List.of(
-                "LINK_CREATED", "OPENED", "IN_PROGRESS", "CONVERTED", "ACTIVATED", "REJECTED", "EXPIRED"));
+                "LINK_CREATED", "OPENED", "IN_PROGRESS", "CONVERTED", "ACTIVATED", "REJECTED", "EXPIRED", "FAILED"));
         out.put("retailers", jdbc.queryForList("""
                 SELECT u.id, u.full_name, u.code, u.parent_id, u.hub_id
                   FROM users u
@@ -74,7 +74,7 @@ public class SalesAdminReportHandler implements AdminReportHandler {
 
     @Override
     public Map<String, Object> run(AdminReportQuery query) {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
         requireRange(query.from(), query.to());
         StringBuilder sql = new StringBuilder("""
                 SELECT l.id, l.state, l.sale_type, l.sale_provider, l.budget,

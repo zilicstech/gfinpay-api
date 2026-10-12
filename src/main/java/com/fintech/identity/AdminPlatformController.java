@@ -6,6 +6,7 @@ import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiException;
 import com.fintech.platform.web.ApiResponse;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
@@ -26,6 +27,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import com.fintech.platform.web.PageWindow;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -55,7 +57,7 @@ public class AdminPlatformController {
     public record CreateRetailerRequest(
             @NotBlank String fullName,
             @NotBlank @Pattern(regexp = "\\d{10}", message = "10-digit mobile required") String mobile,
-            String email,
+            @NotBlank @Email(message = "A valid email is required") String email,
             @NotBlank @Size(min = 8) String password,
             @NotNull UUID distributorId,
             @NotBlank String city,
@@ -67,7 +69,14 @@ public class AdminPlatformController {
             @NotBlank @Pattern(regexp = "\\d{10}", message = "10-digit mobile required") String mobile,
             String email,
             @NotBlank @Size(min = 8) String password,
-            @NotNull UUID hubId) {}
+            String adminType,
+            UUID hubId) {}
+
+    public record CreateAuditorRequest(
+            @NotBlank String fullName,
+            @NotBlank @Pattern(regexp = "\\d{10}", message = "10-digit mobile required") String mobile,
+            String email,
+            @NotBlank @Size(min = 8) String password) {}
 
     public record StatusRequest(@NotBlank String status) {}
 
@@ -90,23 +99,17 @@ public class AdminPlatformController {
 
     public record ResolveRequest(@NotBlank String resolution) {}
 
-    public record ReportRunRequest(@NotBlank String reportType, @NotBlank String title) {}
-
-    public record AgentEkycStartRequest(@NotBlank String ovdType, @NotBlank String ovdLast4) {}
-
-    public record AgentEkycVerifyRequest(@NotBlank String otp) {}
-
     private final AdminPlatformService admin;
-    private final AgentEkycService agentEkyc;
     private final FdSalesReconService fdRecon;
     private final AdminEarningsService earnings;
+    private final RetailerPaysprintEkycService paysprintEkyc;
 
-    public AdminPlatformController(AdminPlatformService admin, AgentEkycService agentEkyc,
-                                   FdSalesReconService fdRecon, AdminEarningsService earnings) {
+    public AdminPlatformController(AdminPlatformService admin, FdSalesReconService fdRecon,
+                                   AdminEarningsService earnings, RetailerPaysprintEkycService paysprintEkyc) {
         this.admin = admin;
-        this.agentEkyc = agentEkyc;
         this.fdRecon = fdRecon;
         this.earnings = earnings;
+        this.paysprintEkyc = paysprintEkyc;
     }
 
     @GetMapping("/hubs")
@@ -182,14 +185,32 @@ public class AdminPlatformController {
 
     @GetMapping("/users")
     @PreAuthorize("hasAuthority('users.onboard')")
-    public ApiResponse<List<Map<String, Object>>> users(@RequestParam(required = false) String type) {
-        return ApiResponse.ok(admin.listUsers(type));
+    public ApiResponse<List<Map<String, Object>>> users(@RequestParam(required = false) String type,
+                                                        @RequestParam(required = false) Integer limit,
+                                                        @RequestParam(required = false) Integer offset) {
+        return ApiResponse.ok(admin.listUsers(type, PageWindow.limit(limit), PageWindow.offset(offset)));
     }
 
     @GetMapping("/users/{id}")
     @PreAuthorize("hasAuthority('users.onboard')")
     public ApiResponse<Map<String, Object>> user(@PathVariable UUID id) {
         return ApiResponse.ok(admin.getUser(id));
+    }
+
+    @PostMapping("/users/{id}/paysprint-onboard")
+    @PreAuthorize("hasAuthority('users.onboard')")
+    public ApiResponse<Map<String, Object>> paysprintOnboard(@PathVariable UUID id,
+                                                             @RequestBody(required = false) Map<String, String> body) {
+        admin.getUser(id);
+        String email = body == null ? null : body.get("email");
+        return ApiResponse.ok(paysprintEkyc.issue(id, email));
+    }
+
+    @PostMapping("/users/{id}/paysprint-onboard/status")
+    @PreAuthorize("hasAuthority('users.onboard')")
+    public ApiResponse<Map<String, Object>> paysprintOnboardStatus(@PathVariable UUID id) {
+        admin.getUser(id);
+        return ApiResponse.ok(paysprintEkyc.checkStatus(id));
     }
 
     @PostMapping("/users/distributors")
@@ -213,8 +234,20 @@ public class AdminPlatformController {
     @PreAuthorize("hasAuthority('admins.manage')")
     public ApiResponse<Map<String, Object>> createAdmin(@AuthenticationPrincipal AuthPrincipal me,
                                                         @Valid @RequestBody CreateAdminRequest req) {
+        if ("ADMIN".equalsIgnoreCase(req.adminType())) {
+            return ApiResponse.ok(admin.createPlatformAdmin(
+                    req.fullName(), req.mobile(), req.email(), req.password(), me.userId()));
+        }
         return ApiResponse.ok(admin.createHubAdmin(
                 req.fullName(), req.mobile(), req.email(), req.password(), req.hubId(), me.userId()));
+    }
+
+    @PostMapping("/users/auditors")
+    @PreAuthorize("hasAuthority('admins.manage')")
+    public ApiResponse<Map<String, Object>> createAuditor(@AuthenticationPrincipal AuthPrincipal me,
+                                                          @Valid @RequestBody CreateAuditorRequest req) {
+        return ApiResponse.ok(admin.createAuditor(
+                req.fullName(), req.mobile(), req.email(), req.password(), me.userId()));
     }
 
     @PatchMapping("/users/{id}/status")
@@ -253,24 +286,11 @@ public class AdminPlatformController {
         return ApiResponse.ok(admin.adjustWallet(id, req.amount(), req.direction(), req.narration()));
     }
 
-    @PostMapping("/users/{id}/ekyc")
-    @PreAuthorize("hasAuthority('users.onboard')")
-    public ApiResponse<Map<String, Object>> startAgentEkyc(@PathVariable UUID id,
-                                                           @Valid @RequestBody AgentEkycStartRequest req) {
-        return ApiResponse.ok(agentEkyc.start(id, req.ovdType(), req.ovdLast4()));
-    }
-
-    @PostMapping("/users/{id}/ekyc/verify")
-    @PreAuthorize("hasAuthority('users.onboard')")
-    public ApiResponse<Map<String, Object>> verifyAgentEkyc(@PathVariable UUID id,
-                                                            @Valid @RequestBody AgentEkycVerifyRequest req) {
-        return ApiResponse.ok(agentEkyc.verify(id, req.otp()));
-    }
-
     @GetMapping("/kyc")
     @PreAuthorize("hasAuthority('users.onboard')")
-    public ApiResponse<List<Map<String, Object>>> kyc() {
-        return ApiResponse.ok(admin.listKyc());
+    public ApiResponse<List<Map<String, Object>>> kyc(@RequestParam(required = false) Integer limit,
+                                                      @RequestParam(required = false) Integer offset) {
+        return ApiResponse.ok(admin.listKyc(null, null, PageWindow.limit(limit), PageWindow.offset(offset)));
     }
 
     @GetMapping("/kyc/{userId}")
@@ -313,7 +333,7 @@ public class AdminPlatformController {
     @GetMapping("/transactions")
     @PreAuthorize("hasAuthority('reports.view')")
     public ApiResponse<List<Map<String, Object>>> txns(
-            @RequestParam String txnType,
+            @RequestParam(required = false) String txnType,
             @RequestParam String from,
             @RequestParam String to) {
         return ApiResponse.ok(admin.listTransactions(txnType, parseDay(from, "from"), parseDay(to, "to")));
@@ -333,8 +353,10 @@ public class AdminPlatformController {
 
     @GetMapping("/recon/{id}")
     @PreAuthorize("hasAuthority('settings.manage')")
-    public ApiResponse<Map<String, Object>> reconOne(@PathVariable UUID id) {
-        return ApiResponse.ok(admin.getRecon(id));
+    public ApiResponse<Map<String, Object>> reconOne(@PathVariable UUID id,
+                                                     @RequestParam(required = false) Integer limit,
+                                                     @RequestParam(required = false) Integer offset) {
+        return ApiResponse.ok(admin.getRecon(id, PageWindow.limit(limit), PageWindow.offset(offset)));
     }
 
     @PostMapping("/recon")
@@ -361,25 +383,6 @@ public class AdminPlatformController {
     public ApiResponse<Map<String, String>> deleteRecon(@PathVariable UUID id) {
         fdRecon.deleteBatch(id);
         return ApiResponse.ok(Map.of("deleted", id.toString()));
-    }
-
-    @GetMapping("/report-runs")
-    @PreAuthorize("hasAuthority('settings.manage')")
-    public ApiResponse<List<Map<String, Object>>> reportRuns() {
-        return ApiResponse.ok(admin.listReportRuns());
-    }
-
-    @GetMapping("/report-runs/{id}")
-    @PreAuthorize("hasAuthority('settings.manage')")
-    public ApiResponse<Map<String, Object>> reportRun(@PathVariable UUID id) {
-        return ApiResponse.ok(admin.getReportRun(id));
-    }
-
-    @PostMapping("/report-runs")
-    @PreAuthorize("hasAuthority('settings.manage')")
-    public ApiResponse<Map<String, Object>> createReport(@AuthenticationPrincipal AuthPrincipal me,
-                                                         @Valid @RequestBody ReportRunRequest req) {
-        return ApiResponse.ok(admin.createReportRun(req.reportType(), req.title(), me.userId()));
     }
 
     private static LocalDate parseDay(String raw, String field) {

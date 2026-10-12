@@ -14,7 +14,7 @@ class FdReconRowTest {
     void unidentifiedKeepsPhoneAndUnidentifiedNetwork() {
         FdMisRow mis = new FdMisRow("ZET", "SBM", "SBM", "9999999001", "Recon Demo User",
                 "u1", null, "VKYC_STARTED", "vkyc_started_time", Instant.parse("2026-09-24T16:00:00Z"),
-                FdPartnerLifecycle.IN_PROGRESS, Map.of("phone_number", "9999999001", "full_name", "Recon Demo User"));
+                FdPartnerLifecycle.IN_PROGRESS, Map.of("phone_number", "9999999001", "full_name", "Recon Demo User"), null);
         FdReconRow row = FdReconRow.unidentified(mis);
         assertFalse(row.identified());
         assertEquals("9999999001", row.customerMobile());
@@ -31,7 +31,7 @@ class FdReconRowTest {
         java.util.UUID retailerId = java.util.UUID.randomUUID();
         FdMisRow mis = new FdMisRow("ZET", "SBM", "SBM", "9999999001", "Recon Demo User",
                 "u1", null, "FD_PAID", "fd_payment_success_time", null,
-                FdPartnerLifecycle.IN_PROGRESS, Map.of("phone_number", "9999999001"));
+                FdPartnerLifecycle.IN_PROGRESS, Map.of("phone_number", "9999999001"), null);
         FdReconRow row = FdReconRow.fromMatch(mis, Map.of(
                 "id", leadId,
                 "retailer_user_id", retailerId,
@@ -54,7 +54,7 @@ class FdReconRowTest {
         java.util.UUID vendorId = java.util.UUID.randomUUID();
         FdMisRow mis = new FdMisRow("ZET", "SBM", "SBM", "7899078990", "Rohit",
                 "u1", null, "ACTIVATED", "virtual_card_activated_time", null,
-                FdPartnerLifecycle.ACTIVATED, Map.of());
+                FdPartnerLifecycle.ACTIVATED, Map.of(), null);
         FdReconRow row = FdReconRow.fromMatch(mis, Map.of(
                 "id", java.util.UUID.randomUUID(),
                 "sale_channel", "EXTERNAL",

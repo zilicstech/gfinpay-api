@@ -15,4 +15,5 @@ public record FdMisRow(
         String sourceColumn,
         Instant partnerStatusAt,
         FdPartnerLifecycle lifecycle,
-        Map<String, String> raw) {}
+        Map<String, String> raw,
+        Map<String, Object> partnerSnapshot) {}

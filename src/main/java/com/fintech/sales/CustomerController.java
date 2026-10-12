@@ -47,19 +47,12 @@ public class CustomerController {
 
     public record EligibilityRequest(@NotBlank String categoryCode, @NotNull @Positive BigDecimal budget) {}
 
-    public record EkycStartRequest(@NotBlank String ovdType, @NotBlank String ovdLast4) {}
-
-    public record EkycVerifyRequest(@NotBlank @Pattern(regexp = "\\d{6}") String otp) {}
-
     private final CustomerService customers;
-    private final CustomerEkycService ekyc;
     private final ProductEligibilityService eligibility;
     private final SalesLeadService sales;
 
-    public CustomerController(CustomerService customers, CustomerEkycService ekyc,
-                              ProductEligibilityService eligibility, SalesLeadService sales) {
+    public CustomerController(CustomerService customers, ProductEligibilityService eligibility, SalesLeadService sales) {
         this.customers = customers;
-        this.ekyc = ekyc;
         this.eligibility = eligibility;
         this.sales = sales;
     }
@@ -92,22 +85,6 @@ public class CustomerController {
                                                    @PathVariable UUID id,
                                                    @Valid @RequestBody UpdateRequest req) {
         return ApiResponse.ok(customers.update(me, id, req.fullName(), req.mobile(), req.email(), req.city(), req.state(), req.pincode()));
-    }
-
-    @PostMapping("/{id}/ekyc")
-    @PreAuthorize("hasAuthority('sales.create')")
-    public ApiResponse<Map<String, Object>> startEkyc(@AuthenticationPrincipal AuthPrincipal me,
-                                                      @PathVariable UUID id,
-                                                      @Valid @RequestBody EkycStartRequest req) {
-        return ApiResponse.ok(ekyc.start(me, id, req.ovdType(), req.ovdLast4()));
-    }
-
-    @PostMapping("/{id}/ekyc/verify")
-    @PreAuthorize("hasAuthority('sales.create')")
-    public ApiResponse<Map<String, Object>> verifyEkyc(@AuthenticationPrincipal AuthPrincipal me,
-                                                       @PathVariable UUID id,
-                                                       @Valid @RequestBody EkycVerifyRequest req) {
-        return ApiResponse.ok(ekyc.verify(me, id, req.otp()));
     }
 
     @PostMapping("/{id}/eligibility")

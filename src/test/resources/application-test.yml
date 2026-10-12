@@ -1,0 +1,37 @@
+spring:
+  task:
+    scheduling:
+      enabled: false
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+
+app:
+  jwt:
+    secret: test-jwt-secret-at-least-32-characters
+  webhook:
+    secret: test-webhook-secret
+  self-base-url: http://localhost:8090
+  public-app-url: http://localhost:3001
+  bootstrap:
+    admin:
+      code: GFINTEST0
+      password: test-password-123
+      mobile: "9000000001"
+      full-name: Test Super Admin
+      email: admin@gfinpay.test
+  paysprint:
+    base-url: http://localhost
+    partner-id: test
+    merchant-code: test
+    jwt-key: test-jwt-key
+    authorised-key: test-authorised-key
+    aes-key: "1234567890123456"
+    aes-iv: "1234567890123456"
+    callback-secret: test-callback
+  cors:
+    allow-all-origins: false
+    allowed-origins: http://localhost:3001
+  otp:
+    demo: true

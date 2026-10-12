@@ -6,24 +6,17 @@ import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
-/**
- * Double-entry postings. Every group must balance (Σ debits = Σ credits) — validated here
- * and enforced again by the deferred DB constraint trigger at commit.
- */
+/** Append-only wallet movements. A line debits or credits one wallet. */
 @Service
 public class LedgerService {
 
-    /** Platform-level account ids (seeded in V2). */
-    public static final UUID PLATFORM_SETTLEMENT = UUID.fromString("b0000000-0000-0000-0000-000000000001");
-    public static final UUID PG_RECEIVABLE = UUID.fromString("b0000000-0000-0000-0000-000000000002");
-    public static final UUID FEE_INCOME = UUID.fromString("b0000000-0000-0000-0000-000000000003");
-
-    public record Entry(UUID accountId, String direction, BigDecimal amount, String narration) {
-        public static Entry debit(UUID accountId, BigDecimal amount, String narration) {
-            return new Entry(accountId, "DEBIT", amount, narration);
+    public record Entry(UUID walletId, String direction, BigDecimal amount, String narration) {
+        public static Entry debit(UUID walletId, BigDecimal amount, String narration) {
+            return new Entry(walletId, "DEBIT", amount, narration);
         }
-        public static Entry credit(UUID accountId, BigDecimal amount, String narration) {
-            return new Entry(accountId, "CREDIT", amount, narration);
+
+        public static Entry credit(UUID walletId, BigDecimal amount, String narration) {
+            return new Entry(walletId, "CREDIT", amount, narration);
         }
     }
 
@@ -33,27 +26,19 @@ public class LedgerService {
         this.jdbc = jdbc;
     }
 
-    /** Posts a balanced group of entries for a transaction. Returns the posting group id. */
+    public UUID post(UUID transactionId, UUID walletId, String direction, BigDecimal amount, String narration) {
+        return postGroup(transactionId, List.of(new Entry(walletId, direction, amount, narration)));
+    }
+
+    /** Writes one posting group. Returns the group id stored on each line. */
     public UUID postGroup(UUID transactionId, List<Entry> entries) {
-        BigDecimal debits = BigDecimal.ZERO;
-        BigDecimal credits = BigDecimal.ZERO;
-        for (Entry e : entries) {
-            if ("DEBIT".equals(e.direction())) {
-                debits = debits.add(e.amount());
-            } else {
-                credits = credits.add(e.amount());
-            }
-        }
-        if (debits.compareTo(credits) != 0) {
-            throw new IllegalStateException("Unbalanced posting group: debits=" + debits + " credits=" + credits);
-        }
         UUID group = UUID.randomUUID();
-        for (Entry e : entries) {
-            jdbc.update("""
-                    INSERT INTO ledger_entries (transaction_id, posting_group, account_id, direction, amount, narration)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """, transactionId, group, e.accountId(), e.direction(), e.amount(), e.narration());
-        }
+        jdbc.batchUpdate("""
+                INSERT INTO ledger_entries (transaction_id, posting_group, wallet_id, direction, amount, narration)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, entries.stream()
+                .map(e -> new Object[]{transactionId, group, e.walletId(), e.direction(), e.amount(), e.narration()})
+                .toList());
         return group;
     }
 }

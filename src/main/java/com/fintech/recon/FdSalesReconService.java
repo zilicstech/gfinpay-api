@@ -46,7 +46,7 @@ public class FdSalesReconService {
 
     @Transactional
     public Map<String, Object> submitWeeklyReport(String reportType, MultipartFile file) {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
         validateExcel(file);
         FdReconReportHandler handler = factory.forType(reportType);
         String provider = handler.reportType();
@@ -67,7 +67,7 @@ public class FdSalesReconService {
 
     @Transactional
     public void deleteBatch(UUID id) {
-        access.requireSuperAdmin();
+        access.requireSuperAdminOrPlatformAdmin();
         int n = jdbc.update("DELETE FROM recon_batches WHERE id = ?", id);
         if (n == 0) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "RECON_NOT_FOUND", "Recon batch not found");
@@ -95,39 +95,44 @@ public class FdSalesReconService {
 
     private void persistRows(UUID batchId, FdReconOutcome outcome) {
         jdbc.update("DELETE FROM recon_rows WHERE batch_id = ?", batchId);
-        for (FdReconRow row : outcome.rows()) {
-            jdbc.update("""
-                    INSERT INTO recon_rows
-                        (batch_id, customer_mobile, customer_name, lead_id,
-                         retailer_user_id, distributor_user_id, hub_id,
-                         retailer_label, distributor_label, hub_label,
-                         identified, current_status, payload)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
-                    """,
-                    batchId,
-                    row.customerMobile(),
-                    row.customerName(),
-                    row.leadId(),
-                    row.retailerUserId(),
-                    row.distributorUserId(),
-                    row.hubId(),
-                    row.retailerLabel(),
-                    row.distributorLabel(),
-                    row.hubLabel(),
-                    row.identified(),
-                    row.currentStatus(),
-                    toJson(row.payload()));
+        if (outcome.rows().isEmpty()) {
+            return;
         }
+        jdbc.batchUpdate("""
+                INSERT INTO recon_rows
+                    (batch_id, customer_mobile, customer_name, lead_id,
+                     retailer_user_id, distributor_user_id, hub_id,
+                     retailer_label, distributor_label, hub_label,
+                     identified, current_status, payload)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+                """, outcome.rows().stream().map(row -> new Object[]{
+                batchId,
+                row.customerMobile(),
+                row.customerName(),
+                row.leadId(),
+                row.retailerUserId(),
+                row.distributorUserId(),
+                row.hubId(),
+                row.retailerLabel(),
+                row.distributorLabel(),
+                row.hubLabel(),
+                row.identified(),
+                row.currentStatus(),
+                toJson(row.payload())
+        }).toList());
     }
 
     private void persistMismatches(UUID batchId, FdReconOutcome outcome) {
         jdbc.update("DELETE FROM recon_mismatches WHERE batch_id = ?", batchId);
-        for (FdReconMismatch mm : outcome.mismatches()) {
-            jdbc.update("""
-                    INSERT INTO recon_mismatches (batch_id, mismatch_type, partner_ref, details)
-                    VALUES (?, ?, ?, ?::jsonb)
-                    """, batchId, mm.type(), mm.partnerRef(), toJson(mm.details()));
+        if (outcome.mismatches().isEmpty()) {
+            return;
         }
+        jdbc.batchUpdate("""
+                INSERT INTO recon_mismatches (batch_id, mismatch_type, partner_ref, details)
+                VALUES (?, ?, ?, ?::jsonb)
+                """, outcome.mismatches().stream()
+                .map(mm -> new Object[]{batchId, mm.type(), mm.partnerRef(), toJson(mm.details())})
+                .toList());
     }
 
     private String toJson(Object value) {

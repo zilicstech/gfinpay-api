@@ -1,8 +1,11 @@
 package com.fintech.recon;
 
 import com.fintech.fdcards.FdConversionCommission;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,26 +42,34 @@ public class FdProviderReconActivator {
                    AND l.state IN ('LINK_CREATED', 'OPENED', 'IN_PROGRESS', 'CONVERTED')
                  ORDER BY l.created_at
                 """, provider, provider);
-        int activated = 0;
-        for (Map<String, Object> lead : leads) {
-            UUID id = (UUID) lead.get("id");
-            String prior = String.valueOf(lead.get("state"));
-            int updated = jdbc.update("""
+        Set<UUID> activatedIds = new HashSet<>();
+        if (!leads.isEmpty()) {
+            StringBuilder in = new StringBuilder();
+            List<Object> args = new ArrayList<>();
+            for (Map<String, Object> lead : leads) {
+                if (!args.isEmpty()) {
+                    in.append(", ");
+                }
+                in.append("?");
+                args.add(lead.get("id"));
+            }
+            activatedIds.addAll(jdbc.query("""
                     UPDATE sales_leads
                        SET state = 'ACTIVATED',
                            updated_at = now(),
                            state_history = state_history || jsonb_build_array(
                                jsonb_build_object('state', 'ACTIVATED', 'at', now(), 'source', 'RECON'))
-                     WHERE id = ?
+                     WHERE id IN (%s)
                        AND state IN ('LINK_CREATED', 'OPENED', 'IN_PROGRESS', 'CONVERTED')
-                    """, id);
-            if (updated != 1) {
-                continue;
-            }
-            if (!"CONVERTED".equals(prior)) {
+                    RETURNING id
+                    """.formatted(in), (rs, rowNum) -> rs.getObject("id", UUID.class), args.toArray()));
+        }
+        int activated = activatedIds.size();
+        for (Map<String, Object> lead : leads) {
+            UUID id = (UUID) lead.get("id");
+            if (activatedIds.contains(id) && !"CONVERTED".equals(String.valueOf(lead.get("state")))) {
                 fdCommission.payOnConversion(lead);
             }
-            activated++;
         }
         log.info("FD_RECON_ACTIVATE provider={} eligible={} activated={}", provider, leads.size(), activated);
         return new FdReconOutcome(leads.size(), activated, activated, 0, 0, "PROVIDER_DEFAULT", List.of(), List.of());

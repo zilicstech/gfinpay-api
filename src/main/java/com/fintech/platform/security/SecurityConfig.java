@@ -61,6 +61,10 @@ public class SecurityConfig {
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setExposedHeaders(List.of("X-Request-Id", "X-Idempotency-Replay"));
+        // Required for the httpOnly refresh cookie on /api/v1/auth/refresh and /logout.
+        // Keep app.cors.allow-all-origins=false outside local dev: wildcard origins plus
+        // credentials would let any site drive the refresh endpoint.
+        config.setAllowCredentials(true);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", config);
         return source;

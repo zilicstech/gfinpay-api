@@ -113,9 +113,18 @@ public class SalesLeadService {
             args.add(retailerUserId);
         }
         sql.append(" ORDER BY l.created_at DESC LIMIT 300 ");
+        boolean leadGen = services.isEnabled(com.fintech.platform.PlatformServiceGate.LEAD_GEN);
+        boolean fdModule = fdProviders.directory().moduleEnabled();
         return jdbc.queryForList(sql.toString(), args.toArray()).stream()
-                .filter(row -> services.isCatalogCategoryAvailable(String.valueOf(row.get("category_code"))))
+                .filter(row -> categoryAvailable(String.valueOf(row.get("category_code")), leadGen, fdModule))
                 .toList();
+    }
+
+    private static boolean categoryAvailable(String categoryCode, boolean leadGen, boolean fdModule) {
+        if ("FD_CARD".equalsIgnoreCase(categoryCode)) {
+            return fdModule;
+        }
+        return leadGen;
     }
 
     public Map<String, Object> get(AuthPrincipal me, UUID id) {
@@ -197,7 +206,7 @@ public class SalesLeadService {
             throw ApiException.of(HttpStatus.NOT_FOUND, "LINK_NOT_FOUND", "This link is not valid");
         }
         String state = String.valueOf(rows.get(0).get("state"));
-        boolean closed = "REJECTED".equals(state) || "EXPIRED".equals(state)
+        boolean closed = "REJECTED".equals(state) || "EXPIRED".equals(state) || "FAILED".equals(state)
                 || "CONVERTED".equals(state) || "ACTIVATED".equals(state);
         return Map.of("state", state, "active", !closed);
     }
@@ -212,8 +221,8 @@ public class SalesLeadService {
         Map<String, Object> lead = rows.get(0);
         services.requireCatalogCategory(String.valueOf(lead.get("category_code")));
         String state = String.valueOf(lead.get("state"));
-        if ("REJECTED".equals(state) || "EXPIRED".equals(state) || "CONVERTED".equals(state)
-                || "ACTIVATED".equals(state)) {
+        if ("REJECTED".equals(state) || "EXPIRED".equals(state) || "FAILED".equals(state)
+                || "CONVERTED".equals(state) || "ACTIVATED".equals(state)) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "LEAD_CLOSED", "This link is no longer active");
         }
         String refid = String.valueOf(lead.get("provider_refid"));
@@ -398,10 +407,10 @@ public class SalesLeadService {
                 args.add(me.userId());
                 args.add(me.userId());
             }
-            case "SUPER_ADMIN" -> {
+            case "SUPER_ADMIN", "ADMIN" -> {
                 // all channels
             }
-            case "ADMIN" -> access.appendHubFilter(sql, args, "l.hub_id");
+            case "HUBADMIN" -> access.appendHubFilter(sql, args, "l.hub_id");
             default -> throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
         }
     }
@@ -431,10 +440,10 @@ public class SalesLeadService {
                 args.add(me.userId());
                 args.add(me.userId());
             }
-            case "SUPER_ADMIN" -> {
+            case "SUPER_ADMIN", "ADMIN" -> {
                 // all
             }
-            case "ADMIN" -> access.appendHubFilter(sql, args, "l.hub_id");
+            case "HUBADMIN" -> access.appendHubFilter(sql, args, "l.hub_id");
             default -> throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
         }
     }

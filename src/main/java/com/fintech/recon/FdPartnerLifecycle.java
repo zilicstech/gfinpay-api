@@ -5,5 +5,6 @@ public enum FdPartnerLifecycle {
     NONE,
     OPENED,
     IN_PROGRESS,
-    ACTIVATED
+    ACTIVATED,
+    FAILED
 }

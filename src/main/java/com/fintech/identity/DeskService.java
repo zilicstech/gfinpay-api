@@ -2,6 +2,7 @@ package com.fintech.identity;
 
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiException;
+import com.fintech.platform.web.PageWindow;
 import com.fintech.reports.DashboardSnapshotService;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -342,9 +343,8 @@ public class DeskService {
     public Map<String, Object> createOutlet(AuthPrincipal me, String fullName, String mobile, String email,
                                             String password, String city, String state, String pincode) {
         requireDistributor(me);
-        String resolvedEmail = (email == null || email.isBlank()) ? mobile + "@gfinpay.com" : email;
         log.info("DESK_ONBOARD_OUTLET dist={} mobile={}", me.userId(), mobile);
-        return admin.createRetailer(fullName, mobile, resolvedEmail, password, me.userId(), city, state, pincode,
+        return admin.createRetailer(fullName, mobile, email, password, me.userId(), city, state, pincode,
                 me.userId());
     }
 
@@ -356,9 +356,14 @@ public class DeskService {
         if (!"RETAILER".equals(String.valueOf(user.get("user_type")))) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "You can only change outlet status");
         }
-        if (!List.of("ACTIVE", "SUSPENDED").contains(status)) {
+        if (!"INACTIVE".equals(status)) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_STATUS",
-                    "Outlets can be activated or suspended from the desk");
+                    "A distributor can mark an active retailer inactive");
+        }
+        String current = String.valueOf(user.get("status"));
+        if (!"ACTIVE".equals(current)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_STATUS",
+                    "Only an active retailer can be marked inactive");
         }
         return admin.updateStatus(outletId, status);
     }
@@ -394,8 +399,7 @@ public class DeskService {
         if (!"RETAILER".equals(String.valueOf(user.get("user_type")))) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "You can only adjust an outlet till");
         }
-        admin.adjustWallet(outletId, amount, direction, narration);
-        return admin.getUser(outletId);
+        return admin.adjustWallet(outletId, amount, direction, narration);
     }
 
     public List<Map<String, Object>> listTransactions(AuthPrincipal me) {
@@ -430,14 +434,9 @@ public class DeskService {
 
     public List<Map<String, Object>> listKyc(AuthPrincipal me) {
         if (isDistributor(me)) {
-            return admin.listKyc().stream()
-                    .filter(row -> me.userId().equals(row.get("distributor_id"))
-                            || me.userId().toString().equals(String.valueOf(row.get("distributor_id"))))
-                    .toList();
+            return admin.listKyc(me.userId(), null, PageWindow.DEFAULT_LIMIT, 0);
         }
-        return admin.listKyc().stream()
-                .filter(row -> me.userId().equals(row.get("user_id")))
-                .toList();
+        return admin.listKyc(null, me.userId(), PageWindow.DEFAULT_LIMIT, 0);
     }
 
     public Map<String, Object> getKyc(AuthPrincipal me, UUID userId) {
@@ -472,16 +471,13 @@ public class DeskService {
         out.put("byRole", byRole);
         if (isDistributor(me)) {
             out.put("byOutlet", jdbc.queryForList("""
-                    SELECT u.id, u.full_name,
-                           COALESCE((
-                               SELECT sum(e.amount)
-                                 FROM commission_earnings e
-                                 JOIN transactions t ON t.id = e.transaction_id
-                                WHERE e.beneficiary_user = ?
-                                  AND t.agent_user_id = u.id
-                           ), 0) AS amount
+                    SELECT u.id, u.full_name, COALESCE(sum(e.amount), 0) AS amount
                       FROM users u
+                      LEFT JOIN transactions t ON t.agent_user_id = u.id
+                      LEFT JOIN commission_earnings e
+                             ON e.transaction_id = t.id AND e.beneficiary_user = ?
                      WHERE u.parent_id = ? AND u.user_type = 'RETAILER'
+                     GROUP BY u.id, u.full_name
                      ORDER BY amount DESC, u.full_name
                     """, me.userId(), me.userId()));
         }
@@ -553,17 +549,17 @@ public class DeskService {
                 SELECT s.id, s.mobile, s.full_name, s.kyc_level, s.ovd_type, s.ovd_last4,
                        s.mobile_verified_at, s.created_at,
                        u.id AS outlet_id, u.full_name AS outlet_name, k.shop_name,
-                       COALESCE((
-                           SELECT count(*) FROM transactions t
-                            WHERE t.dmt_sender_id = s.id AND t.state = 'SUCCESS'
-                       ),0) AS txn_count,
-                       COALESCE((
-                           SELECT sum(t.amount) FROM transactions t
-                            WHERE t.dmt_sender_id = s.id AND t.state = 'SUCCESS'
-                       ),0) AS volume
+                       COALESCE(tx.txn_count, 0) AS txn_count,
+                       COALESCE(tx.volume, 0) AS volume
                   FROM dmt_senders s
                   JOIN users u ON u.id = s.registered_by
                   LEFT JOIN agent_kyc_profiles k ON k.user_id = u.id
+                  LEFT JOIN (
+                        SELECT dmt_sender_id, count(*) AS txn_count, COALESCE(sum(amount), 0) AS volume
+                          FROM transactions
+                         WHERE state = 'SUCCESS' AND dmt_sender_id IS NOT NULL
+                         GROUP BY dmt_sender_id
+                  ) tx ON tx.dmt_sender_id = s.id
                  WHERE %s
                  ORDER BY s.created_at DESC
                  LIMIT 200

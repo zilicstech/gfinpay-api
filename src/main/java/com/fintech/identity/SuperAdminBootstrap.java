@@ -43,7 +43,6 @@ public class SuperAdminBootstrap implements ApplicationRunner {
                 required(props.email(), "app.bootstrap.admin.email"),
                 passwordEncoder.encode(required(props.password(), "app.bootstrap.admin.password")),
                 code);
-        jdbc.update("INSERT INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE code = 'SUPER_ADMIN'", id);
         log.info("BOOTSTRAP created super admin code={}", code);
     }
 

@@ -3,7 +3,6 @@ package com.fintech.recon;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import com.fintech.recon.zet.ZetFdMisParser;
 import com.fintech.recon.zet.ZetMisWorkbookFixtures;
-import com.fintech.vendor.VendorService;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -21,7 +20,7 @@ class ZetFdReconFlowTest {
         ZetFdMisParser parser = new ZetFdMisParser();
         RecordingMatcher matcher = new RecordingMatcher();
         RecordingApplier applier = new RecordingApplier();
-        ZetFdReconHandler handler = new ZetFdReconHandler(parser, matcher, applier, stubVendors());
+        ZetFdReconHandler handler = new ZetFdReconHandler(parser, matcher, applier);
 
         MockMultipartFile file = new MockMultipartFile("file", "zet-mini.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -52,18 +51,9 @@ class ZetFdReconFlowTest {
         }
     }
 
-    private static VendorService stubVendors() {
-        return new VendorService(null, null, null, "http://localhost:3001") {
-            @Override
-            public VendorService.OptionalVendorLead findVendorLeadByRef(String ref) {
-                return null;
-            }
-        };
-    }
-
     static final class RecordingApplier extends FdLeadReconApplier {
         RecordingApplier() {
-            super(null, null);
+            super(null, null, null);
         }
 
         @Override

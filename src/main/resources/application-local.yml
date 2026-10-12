@@ -6,7 +6,9 @@ app:
   self-base-url: http://localhost:8090
   public-app-url: http://localhost:3001
   cors:
-    allow-all-origins: true
+    # Must stay false: the refresh cookie needs credentialed CORS, which cannot be paired
+    # with wildcard origins. The dev UI origin is listed explicitly below.
+    allow-all-origins: false
     allowed-origins: http://localhost:3001
 
 logging:

@@ -69,7 +69,7 @@ public class ProductEligibilityService {
             Map<String, Object> fd = fdEligibility.evaluate(customerId, budget, items);
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> products = (List<Map<String, Object>>) fd.get("products");
-            attachRetailerCommission(me.userId(), products);
+            attachSellerCommission(me, products);
             out.put("products", products);
             if (fd.get("message") != null) {
                 out.put("message", fd.get("message"));
@@ -140,21 +140,26 @@ public class ProductEligibilityService {
         }
     }
 
-    private void attachRetailerCommission(UUID retailerUserId, List<Map<String, Object>> products) {
+    private void attachSellerCommission(AuthPrincipal me, List<Map<String, Object>> products) {
         if (products == null) {
             return;
         }
+        boolean distributor = "MASTER_DISTRIBUTOR".equals(me.userType());
+        Map<String, String> txnByProvider = new java.util.HashMap<>();
+        for (Map<String, Object> row : jdbc.queryForList("SELECT code, commission_txn_type FROM fd_providers")) {
+            txnByProvider.put(String.valueOf(row.get("code")), String.valueOf(row.get("commission_txn_type")));
+        }
+        Map<String, CommissionEngine.Resolution> pricingByTxn = new java.util.HashMap<>();
         for (Map<String, Object> product : products) {
-            String provider = String.valueOf(product.get("provider"));
-            List<Map<String, Object>> rows = jdbc.queryForList(
-                    "SELECT commission_txn_type FROM fd_providers WHERE code = ?", provider);
-            if (rows.isEmpty()) {
+            String txnType = txnByProvider.get(String.valueOf(product.get("provider")));
+            if (txnType == null) {
                 product.put("retailer_commission", null);
                 continue;
             }
-            String txnType = String.valueOf(rows.get(0).get("commission_txn_type"));
-            CommissionEngine.Resolution pricing = commissionEngine.resolve(retailerUserId, txnType, BigDecimal.ONE);
-            product.put("retailer_commission", pricing.ruleId() == null ? null : pricing.retailerShare());
+            CommissionEngine.Resolution pricing = pricingByTxn.computeIfAbsent(
+                    txnType, type -> commissionEngine.resolve(me.userId(), type, BigDecimal.ONE));
+            BigDecimal share = distributor ? pricing.distributorShare() : pricing.retailerShare();
+            product.put("retailer_commission", pricing.ruleId() == null ? null : share);
         }
     }
 

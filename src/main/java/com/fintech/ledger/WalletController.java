@@ -1,7 +1,9 @@
 package com.fintech.ledger;
 
+import com.fintech.finance.FinanceService;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiResponse;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -10,6 +12,8 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -17,14 +21,26 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1")
 public class WalletController {
 
+    public record SettleRequest(BigDecimal amount, String remarks, UUID payoutAccountId) {}
+
     private final WalletService walletService;
     private final TransactionService transactionService;
+    private final FinanceService finance;
     private final JdbcTemplate jdbc;
 
-    public WalletController(WalletService walletService, TransactionService transactionService, JdbcTemplate jdbc) {
+    public WalletController(WalletService walletService, TransactionService transactionService,
+                            FinanceService finance, JdbcTemplate jdbc) {
         this.walletService = walletService;
         this.transactionService = transactionService;
+        this.finance = finance;
         this.jdbc = jdbc;
+    }
+
+    @PostMapping("/wallet/settle")
+    @PreAuthorize("hasAuthority('wallet.view')")
+    public ApiResponse<Map<String, Object>> settle(@AuthenticationPrincipal AuthPrincipal me,
+                                                   @RequestBody SettleRequest body) {
+        return ApiResponse.ok(finance.submitEarningsWithdrawal(me, body.amount(), body.remarks(), body.payoutAccountId()));
     }
 
     @GetMapping("/wallet")
@@ -41,10 +57,9 @@ public class WalletController {
     @PreAuthorize("hasAuthority('wallet.view')")
     public ApiResponse<List<Map<String, Object>>> statement(@AuthenticationPrincipal AuthPrincipal me) {
         List<Map<String, Object>> rows = jdbc.queryForList("""
-                SELECT le.id, le.transaction_id, la.account_type::text AS account_type, le.direction::text AS direction, le.amount, le.narration, le.created_at
+                SELECT le.id, le.transaction_id, 'WALLET' AS account_type, le.direction::text AS direction, le.amount, le.narration, le.created_at
                   FROM ledger_entries le
-                  JOIN ledger_accounts la ON la.id = le.account_id
-                  JOIN wallets w ON w.id = la.wallet_id
+                  JOIN wallets w ON w.id = le.wallet_id
                  WHERE w.user_id = ?
                  ORDER BY le.id DESC
                  LIMIT 50

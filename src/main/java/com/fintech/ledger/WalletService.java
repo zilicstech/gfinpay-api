@@ -11,8 +11,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class WalletService {
 
-    public record WalletInfo(UUID walletId, UUID availableAccountId, UUID holdAccountId,
-                             BigDecimal available, BigDecimal hold) {}
+    public record WalletInfo(UUID walletId, BigDecimal available, BigDecimal hold, String status, boolean active) {}
 
     private final JdbcTemplate jdbc;
 
@@ -20,14 +19,10 @@ public class WalletService {
         this.jdbc = jdbc;
     }
 
-    /** Creates the wallet plus its AVAILABLE and HOLD ledger accounts for a new user. */
+    /** Creates the single wallet row for a new user. */
     public UUID createForUser(UUID userId) {
         UUID walletId = UUID.randomUUID();
         jdbc.update("INSERT INTO wallets (id, user_id) VALUES (?, ?)", walletId, userId);
-        jdbc.update("INSERT INTO ledger_accounts (id, account_type, wallet_id) VALUES (?, 'WALLET_AVAILABLE', ?)",
-                UUID.randomUUID(), walletId);
-        jdbc.update("INSERT INTO ledger_accounts (id, account_type, wallet_id) VALUES (?, 'WALLET_HOLD', ?)",
-                UUID.randomUUID(), walletId);
         return walletId;
     }
 
@@ -52,22 +47,19 @@ public class WalletService {
     private WalletInfo fetchBy(String column, UUID value, boolean forUpdate) {
         String lock = forUpdate ? " FOR UPDATE OF w" : "";
         var rows = jdbc.queryForList(
-                "SELECT w.id AS wallet_id, w.available_balance, w.hold_balance, "
-                        + "a.id AS avail_id, h.id AS hold_id "
-                        + "FROM wallets w "
-                        + "JOIN ledger_accounts a ON a.wallet_id = w.id AND a.account_type = 'WALLET_AVAILABLE' "
-                        + "JOIN ledger_accounts h ON h.wallet_id = w.id AND h.account_type = 'WALLET_HOLD' "
-                        + "WHERE " + column + " = ?" + lock,
+                "SELECT w.id AS wallet_id, w.available_balance, w.hold_balance, w.status, w.is_active "
+                        + "FROM wallets w WHERE " + column + " = ?" + lock,
                 value);
         if (rows.isEmpty()) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "WALLET_NOT_FOUND", "No wallet exists for this user");
         }
         Map<String, Object> r = rows.get(0);
-        return new WalletInfo((UUID) r.get("wallet_id"), (UUID) r.get("avail_id"), (UUID) r.get("hold_id"),
-                (BigDecimal) r.get("available_balance"), (BigDecimal) r.get("hold_balance"));
+        return new WalletInfo((UUID) r.get("wallet_id"),
+                (BigDecimal) r.get("available_balance"), (BigDecimal) r.get("hold_balance"),
+                String.valueOf(r.get("status")), Boolean.TRUE.equals(r.get("is_active")));
     }
 
-    /** Applies deltas to the cached balances (ledger entries remain the source of truth). */
+    /** Applies deltas to the cached balances. */
     public void adjustCache(UUID walletId, BigDecimal availableDelta, BigDecimal holdDelta) {
         int updated = jdbc.update("""
                 UPDATE wallets

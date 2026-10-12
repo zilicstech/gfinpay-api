@@ -24,8 +24,9 @@ public class SaleNetworkSnapshot {
         return jdbc.queryForObject("""
                 SELECT i.category_code,
                        i.provider,
-                       r.parent_id AS distributor_user_id,
-                       COALESCE(r.hub_id, d.hub_id) AS hub_id
+                       CASE WHEN r.user_type = 'MASTER_DISTRIBUTOR' THEN r.id ELSE r.parent_id END AS distributor_user_id,
+                       CASE WHEN r.user_type = 'MASTER_DISTRIBUTOR' THEN r.hub_id
+                            ELSE COALESCE(r.hub_id, d.hub_id) END AS hub_id
                   FROM catalog_items i
                   JOIN users r ON r.id = ?
                   LEFT JOIN users d ON d.id = r.parent_id

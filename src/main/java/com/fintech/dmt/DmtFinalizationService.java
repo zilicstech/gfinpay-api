@@ -7,8 +7,6 @@ import com.fintech.ledger.TransactionService;
 import com.fintech.ledger.WalletService;
 import com.fintech.platform.webhook.WebhookHandler;
 import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -74,15 +72,6 @@ public class DmtFinalizationService implements WebhookHandler {
                     return txnId;
                 }
                 WalletService.WalletInfo wallet = walletService.lockByWalletId(walletId);
-
-                // Capture: release hold into settlement + fee income
-                List<LedgerService.Entry> capture = new ArrayList<>();
-                capture.add(LedgerService.Entry.debit(wallet.holdAccountId(), total, "DMT capture"));
-                capture.add(LedgerService.Entry.credit(LedgerService.PLATFORM_SETTLEMENT, amount, "DMT payout settlement"));
-                if (fee.signum() > 0) {
-                    capture.add(LedgerService.Entry.credit(LedgerService.FEE_INCOME, fee, "DMT convenience fee"));
-                }
-                ledgerService.postGroup(txnId, capture);
                 walletService.adjustCache(walletId, BigDecimal.ZERO, total.negate());
 
                 postCommissions(txnId, agentId, amount, wallet);
@@ -92,9 +81,7 @@ public class DmtFinalizationService implements WebhookHandler {
                     return txnId;
                 }
                 WalletService.WalletInfo wallet = walletService.lockByWalletId(walletId);
-                ledgerService.postGroup(txnId, List.of(
-                        LedgerService.Entry.debit(wallet.holdAccountId(), total, "DMT reversal - release hold"),
-                        LedgerService.Entry.credit(wallet.availableAccountId(), total, "DMT reversal - refund")));
+                ledgerService.post(txnId, wallet.walletId(), "CREDIT", total, "DMT reversal");
                 walletService.adjustCache(walletId, total, total.negate());
                 log.info("DMT_FINALIZE failed-and-reversed txnId={} released={}", txnId, total);
             }
@@ -113,38 +100,30 @@ public class DmtFinalizationService implements WebhookHandler {
             return;
         }
         UUID distributorId = jdbc.queryForObject("SELECT parent_id FROM users WHERE id = ?", UUID.class, agentId);
-        UUID postingGroup = null;
+        UUID postingGroup = UUID.randomUUID();
         if (r.add(d).signum() > 0) {
-            List<LedgerService.Entry> split = new ArrayList<>();
-            split.add(LedgerService.Entry.debit(LedgerService.FEE_INCOME, r.add(d), "Commission split payout"));
             if (r.signum() > 0) {
-                split.add(LedgerService.Entry.credit(agentWallet.availableAccountId(), r, "Commission: retailer"));
+                ledgerService.post(txnId, agentWallet.walletId(), "CREDIT", r, "Commission: retailer");
+                walletService.adjustCache(agentWallet.walletId(), r, BigDecimal.ZERO);
             }
             WalletService.WalletInfo distWallet = null;
             if (d.signum() > 0) {
                 distWallet = walletService.lockByUser(distributorId);
-                split.add(LedgerService.Entry.credit(distWallet.availableAccountId(), d, "Commission: distributor"));
-            }
-            postingGroup = ledgerService.postGroup(txnId, split);
-            if (r.signum() > 0) {
-                walletService.adjustCache(agentWallet.walletId(), r, BigDecimal.ZERO);
-            }
-            if (distWallet != null) {
+                ledgerService.post(txnId, distWallet.walletId(), "CREDIT", d, "Commission: distributor");
                 walletService.adjustCache(distWallet.walletId(), d, BigDecimal.ZERO);
             }
         }
-        UUID group = postingGroup != null ? postingGroup : UUID.randomUUID();
         UUID platformUser = jdbc.queryForObject(
                 "SELECT id FROM users WHERE user_type = 'SUPER_ADMIN' LIMIT 1", UUID.class);
         CommissionEngine.EarningNetwork network = commissionEngine.networkForRetailer(agentId);
         if (r.signum() > 0) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), agentId, "RETAILER", r, group, network);
+            commissionEngine.recordEarning(txnId, res.ruleId(), agentId, "RETAILER", r, postingGroup, network);
         }
         if (d.signum() > 0) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), distributorId, "DISTRIBUTOR", d, group, network);
+            commissionEngine.recordEarning(txnId, res.ruleId(), distributorId, "DISTRIBUTOR", d, postingGroup, network);
         }
         if (res.platformShare().signum() > 0) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), platformUser, "PLATFORM", res.platformShare(), group, network);
+            commissionEngine.recordEarning(txnId, res.ruleId(), platformUser, "PLATFORM", res.platformShare(), postingGroup, network);
         }
         log.info("COMMISSION_SPLIT txnId={} retailer={} distributor={} platform={}",
                 txnId, r, d, res.platformShare());
