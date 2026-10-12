@@ -89,7 +89,7 @@ public class PaysprintOnboardCallbackController {
 
     private static ResponseEntity<Map<String, Object>> failed() {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                .body(Map.of("status", 400, "message", "Transaction failed"));
+                .body(Map.of("status", 400, "message", "Transaction Failed"));
     }
 
     private static ResponseEntity<String> html(HttpStatus status, String message) {
