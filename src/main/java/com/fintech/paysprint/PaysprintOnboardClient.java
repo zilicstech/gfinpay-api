@@ -95,13 +95,14 @@ public class PaysprintOnboardClient {
             String responseBody = e.getResponseBodyAsString();
             log.info("PAYSPRINT_API response POST {} status={} body={}", url, e.getStatusCode().value(),
                     logBody(responseBody));
-            throw ApiException.of(HttpStatus.BAD_GATEWAY, "PAYSPRINT_ONBOARD_ERROR", message(e, responseBody));
+            throw ApiException.of(HttpStatus.BAD_GATEWAY, "PAYSPRINT_ONBOARD_ERROR",
+                    PaysprintMessages.fromBody(mapper, responseBody, "Paysprint rejected the request (" + e.getStatusCode().value() + ")"));
         }
         try {
             JsonNode root = mapper.readTree(raw == null ? "" : raw);
             if (requireStatus && !root.path("status").asBoolean(false)) {
                 throw ApiException.of(HttpStatus.BAD_GATEWAY, "PAYSPRINT_ONBOARD_ERROR",
-                        root.path("message").asText("Paysprint rejected the request"));
+                        PaysprintMessages.fromNode(root, "Paysprint rejected the request"));
             }
             return root;
         } catch (ApiException e) {
@@ -110,22 +111,6 @@ public class PaysprintOnboardClient {
             throw ApiException.of(HttpStatus.BAD_GATEWAY, "PAYSPRINT_ONBOARD_ERROR",
                     "Could not parse Paysprint response");
         }
-    }
-
-    private String message(RestClientResponseException e, String responseBody) {
-        try {
-            JsonNode root = mapper.readTree(responseBody == null ? "" : responseBody);
-            String message = root.path("message").asText("");
-            if (!message.isBlank()) {
-                return message;
-            }
-        } catch (Exception ignored) {
-            // HTML 404 and other non-JSON bodies fall through
-        }
-        if (e.getStatusCode().value() == 404) {
-            return "Paysprint onboarding URL was not found (404)";
-        }
-        return "Paysprint rejected the request (" + e.getStatusCode().value() + ")";
     }
 
     private static String logBody(String raw) {

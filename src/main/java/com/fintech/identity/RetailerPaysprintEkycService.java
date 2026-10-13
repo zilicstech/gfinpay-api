@@ -2,6 +2,7 @@ package com.fintech.identity;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fintech.paysprint.PaysprintJwtVerifier;
+import com.fintech.paysprint.PaysprintMessages;
 import com.fintech.paysprint.PaysprintOnboardClient;
 import com.fintech.paysprint.PaysprintOnboardOutcome;
 import com.fintech.platform.web.ApiException;
@@ -119,7 +120,7 @@ public class RetailerPaysprintEkycService {
                 code, root.path("response_code").asText(""), !redirect.isBlank(), root.path("message").asText(""));
         if (redirect.isBlank()) {
             throw ApiException.of(HttpStatus.BAD_GATEWAY, "PAYSPRINT_ONBOARD_ERROR",
-                    root.path("message").asText("Paysprint did not return an onboarding link"));
+                    PaysprintMessages.fromNode(root, "Paysprint did not return an onboarding link"));
         }
         rememberRedirect((UUID) row.get("id"), redirect);
         return Map.of("url", redirect, "method", "GET");

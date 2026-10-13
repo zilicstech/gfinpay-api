@@ -85,13 +85,15 @@ public class PaysprintFdClient {
         } catch (RestClientResponseException e) {
             log.info("PAYSPRINT_API response POST {} status={} body={}", url, e.getStatusCode().value(),
                     e.getResponseBodyAsString());
-            throw ApiException.of(HttpStatus.BAD_GATEWAY, errorCode, paysprintMessage(e));
+            throw ApiException.of(HttpStatus.BAD_GATEWAY, errorCode,
+                    PaysprintMessages.fromBody(mapper, e.getResponseBodyAsString(),
+                            "Paysprint rejected the request (" + e.getStatusCode().value() + ")"));
         }
         try {
             JsonNode root = mapper.readTree(body);
             if (!root.path("status").asBoolean(false)) {
                 throw ApiException.of(HttpStatus.BAD_GATEWAY, errorCode,
-                        root.path("message").asText("Paysprint rejected the request"));
+                        PaysprintMessages.fromNode(root, "Paysprint rejected the request"));
             }
             return root;
         } catch (ApiException e) {
@@ -101,16 +103,4 @@ public class PaysprintFdClient {
         }
     }
 
-    private String paysprintMessage(RestClientResponseException e) {
-        try {
-            JsonNode root = mapper.readTree(e.getResponseBodyAsString());
-            String message = root.path("message").asText("");
-            if (!message.isBlank()) {
-                return message;
-            }
-        } catch (Exception ignored) {
-            // fall through to status text
-        }
-        return "Paysprint rejected the request (" + e.getStatusCode().value() + ")";
-    }
 }

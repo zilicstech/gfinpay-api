@@ -61,9 +61,12 @@ public class AuthController {
             HttpServletRequest request, HttpServletResponse response,
             @RequestHeader(value = "X-Requested-With", required = false) String requestedWith) {
         requireRequestedWith(requestedWith);
-        SessionService.Rotation rotation = sessions.rotate(cookies.read(request));
+        String refreshCookie = cookies.read(request);
+        SessionService.Rotation rotation = sessions.rotate(refreshCookie);
         if (!rotation.ok()) {
-            cookies.clear(response);
+            if (refreshCookie != null) {
+                cookies.clear(response);
+            }
             throw SessionService.sessionExpired();
         }
         SessionService.Issued rotated = rotation.issued();
