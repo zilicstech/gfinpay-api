@@ -89,6 +89,9 @@ public class CustomerService {
         customer.put("desk_manageable", deskPrincipal(me));
         customer.put("services", jdbc.queryForList("""
                 SELECT l.id, l.state, l.budget, l.payment_link_url, l.link_opened_at, l.created_at,
+                       l.sale_channel, l.sale_provider, l.sale_type, l.hub_name,
+                       l.distributor_name, l.distributor_code, l.retailer_name, l.retailer_code,
+                       l.partner_status, l.product_code,
                        i.code AS item_code, i.name AS item_name, cat.name AS category_name
                   FROM sales_leads l
                   JOIN catalog_items i ON i.id = l.catalog_item_id

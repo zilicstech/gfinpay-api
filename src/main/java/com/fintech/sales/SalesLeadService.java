@@ -37,8 +37,14 @@ public class SalesLeadService {
                    l.distributor_user_id, l.hub_id,
                    l.distributor_code, l.distributor_name, l.retailer_code, l.retailer_name,
                    l.hub_name, l.product_code,
-                   l.sale_type AS category_code
+                   l.sale_type AS category_code,
+                   c.full_name AS customer_name, c.mobile AS customer_mobile,
+                   i.name AS item_name, i.code AS item_code,
+                   cat.name AS category_name
               FROM sales_leads l
+              LEFT JOIN customers c ON c.id = l.customer_id
+              LEFT JOIN catalog_items i ON i.id = l.catalog_item_id
+              LEFT JOIN catalog_categories cat ON cat.code = i.category_code
              WHERE 1=1
             """;
 
