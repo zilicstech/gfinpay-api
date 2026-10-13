@@ -596,7 +596,7 @@ public class AdminPlatformService {
         }
         if ("RETAILER".equals(type) && "ACTIVE".equals(status)) {
             String current = jdbc.queryForObject("SELECT status::text FROM users WHERE id = ?", String.class, userId);
-            boolean restoring = "SUSPENDED".equals(current);
+            boolean restoring = "SUSPENDED".equals(current) || "INACTIVE".equals(current);
             if (!restoring && (!"APPROVED".equals(current) || !finance.hasReceivedActivation(userId))) {
                 throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "ACTIVATION_NOT_APPROVED",
                         "The auditor must approve the activation request before this retailer can go live");
