@@ -83,6 +83,56 @@ public class RetailerPaysprintEkycService {
                 link, "Open this link to continue to PaySprint eKYC.");
     }
 
+    /**
+     * Asks PaySprint for a new hosted page and replaces the stored redirect.
+     * The Gfinpay link stays the same; the next open uses the new PaySprint page.
+     */
+    public Map<String, Object> refreshOnboardUrl(UUID retailerId) {
+        Map<String, Object> row = loadRetailer(retailerId);
+        if ("VERIFIED".equals(String.valueOf(row.get("kyc_status")))) {
+            return result("VERIFIED", null, "eKYC is already completed.");
+        }
+        String code = text(row.get("code"));
+        String mobile = digits(text(row.get("mobile")));
+        String email = text(row.get("email"));
+        String firm = text(row.get("shop_name"));
+        if (firm.isBlank()) {
+            firm = text(row.get("full_name"));
+        }
+        if (code.isBlank()) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "RETAILER_CODE_MISSING",
+                    "This retailer has no GFIN code");
+        }
+        if (mobile.length() != 10) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_MOBILE",
+                    "Retailer mobile must be 10 digits");
+        }
+        if (email.isBlank()) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "EMAIL_REQUIRED",
+                    "PaySprint requires an email for this retailer.");
+        }
+        if (firm.isBlank()) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "FIRM_REQUIRED",
+                    "Add a shop name or retailer name before starting eKYC");
+        }
+        String token = ensureLinkToken(retailerId, text(row.get("paysprint_onboard_token")));
+        boolean issued = row.get("paysprint_onboard_issued_at") != null;
+        String callback = publicAppUrl + "/ekyc/" + token + "/done";
+        log.info("PAYSPRINT_ONBOARD refresh merchantcode={} is_new={} callback={}", code, issued ? "0" : "1", callback);
+        JsonNode root = client.onboardUrl(code, mobile, email, firm, callback, issued ? "0" : "1");
+        String redirect = root.path("redirecturl").asText("");
+        log.info("PAYSPRINT_ONBOARD refresh link merchantcode={} response_code={} redirect_present={} message={}",
+                code, root.path("response_code").asText(""), !redirect.isBlank(), root.path("message").asText(""));
+        if (redirect.isBlank()) {
+            throw ApiException.of(HttpStatus.BAD_GATEWAY, "PAYSPRINT_ONBOARD_ERROR",
+                    PaysprintMessages.fromNode(root, "Paysprint did not return an onboarding link"));
+        }
+        replaceRedirect(retailerId, redirect);
+        return result(text(row.get("kyc_status")).isBlank() ? "NOT_STARTED" : text(row.get("kyc_status")),
+                publicAppUrl + "/ekyc/" + token,
+                "A new onboarding link is ready. Share it again so the retailer can continue.");
+    }
+
     public Map<String, Object> publicStatus(String token) {
         Map<String, Object> row = loadByToken(token);
         boolean verified = "VERIFIED".equals(String.valueOf(row.get("kyc_status")));
@@ -328,6 +378,17 @@ public class RetailerPaysprintEkycService {
         jdbc.update("""
                 UPDATE agent_kyc_profiles
                    SET paysprint_redirect_url = COALESCE(paysprint_redirect_url, ?),
+                       paysprint_onboard_issued_at = COALESCE(paysprint_onboard_issued_at, now()),
+                       updated_at = now()
+                 WHERE user_id = ?
+                """, redirectUrl, retailerId);
+    }
+
+    /** Replaces an expired PaySprint page. The next open of the Gfinpay link uses this URL. */
+    private void replaceRedirect(UUID retailerId, String redirectUrl) {
+        jdbc.update("""
+                UPDATE agent_kyc_profiles
+                   SET paysprint_redirect_url = ?,
                        paysprint_onboard_issued_at = COALESCE(paysprint_onboard_issued_at, now()),
                        updated_at = now()
                  WHERE user_id = ?

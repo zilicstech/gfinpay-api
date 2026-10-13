@@ -213,6 +213,13 @@ public class AdminPlatformController {
         return ApiResponse.ok(paysprintEkyc.checkStatus(id));
     }
 
+    @PostMapping("/users/{id}/paysprint-onboard/refresh")
+    @PreAuthorize("hasAuthority('users.onboard')")
+    public ApiResponse<Map<String, Object>> paysprintOnboardRefresh(@PathVariable UUID id) {
+        admin.getUser(id);
+        return ApiResponse.ok(paysprintEkyc.refreshOnboardUrl(id));
+    }
+
     @PostMapping("/users/distributors")
     @PreAuthorize("hasAuthority('users.onboard')")
     public ApiResponse<Map<String, Object>> createDistributor(@AuthenticationPrincipal AuthPrincipal me,

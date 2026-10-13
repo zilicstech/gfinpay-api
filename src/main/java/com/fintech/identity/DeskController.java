@@ -111,6 +111,14 @@ public class DeskController {
         return ApiResponse.ok(paysprintEkyc.checkStatus(id));
     }
 
+    @PostMapping("/outlets/{id}/paysprint-onboard/refresh")
+    @PreAuthorize("hasAuthority('outlets.manage')")
+    public ApiResponse<Map<String, Object>> paysprintOnboardRefresh(@AuthenticationPrincipal AuthPrincipal me,
+                                                                    @PathVariable UUID id) {
+        desk.getOutlet(me, id);
+        return ApiResponse.ok(paysprintEkyc.refreshOnboardUrl(id));
+    }
+
     @GetMapping("/outlets/{id}/performance")
     @PreAuthorize("hasAuthority('reports.view')")
     public ApiResponse<Map<String, Object>> performance(@AuthenticationPrincipal AuthPrincipal me,
