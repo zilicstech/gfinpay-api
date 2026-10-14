@@ -1,5 +1,6 @@
 package com.fintech.identity;
 
+import com.fintech.audit.ActivityQueryService;
 import com.fintech.recon.FdSalesReconService;
 import com.fintech.reports.AdminEarningsService;
 import com.fintech.platform.security.AuthPrincipal;
@@ -103,13 +104,29 @@ public class AdminPlatformController {
     private final FdSalesReconService fdRecon;
     private final AdminEarningsService earnings;
     private final RetailerPaysprintEkycService paysprintEkyc;
+    private final ActivityQueryService activity;
 
     public AdminPlatformController(AdminPlatformService admin, FdSalesReconService fdRecon,
-                                   AdminEarningsService earnings, RetailerPaysprintEkycService paysprintEkyc) {
+                                   AdminEarningsService earnings, RetailerPaysprintEkycService paysprintEkyc,
+                                   ActivityQueryService activity) {
         this.admin = admin;
         this.fdRecon = fdRecon;
         this.earnings = earnings;
         this.paysprintEkyc = paysprintEkyc;
+        this.activity = activity;
+    }
+
+    @GetMapping("/activity")
+    @PreAuthorize("hasAuthority('settings.manage')")
+    public ApiResponse<List<Map<String, Object>>> myActivity(@RequestParam(required = false) String date) {
+        return ApiResponse.ok(activity.forMe(date));
+    }
+
+    @GetMapping("/users/{id}/activity")
+    @PreAuthorize("hasAuthority('settings.manage')")
+    public ApiResponse<List<Map<String, Object>>> userActivity(@PathVariable UUID id,
+                                                               @RequestParam(required = false) String date) {
+        return ApiResponse.ok(activity.forUser(id, date));
     }
 
     @GetMapping("/hubs")

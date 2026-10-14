@@ -17,6 +17,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import com.fintech.audit.ActivityAuditFilter;
 import com.fintech.platform.web.PublicAppUrl;
 
 @Configuration
@@ -25,7 +26,8 @@ import com.fintech.platform.web.PublicAppUrl;
 public class SecurityConfig {
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http, JwtAuthFilter jwtAuthFilter) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http, JwtAuthFilter jwtAuthFilter,
+                                           ActivityAuditFilter activityAuditFilter) throws Exception {
         http.csrf(csrf -> csrf.disable())
                 .cors(Customizer.withDefaults())
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -39,7 +41,8 @@ public class SecurityConfig {
                             + "\"message\":\"Missing or invalid token\",\"details\":null,\"retriable\":false},"
                             + "\"meta\":null}");
                 }))
-                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(activityAuditFilter, JwtAuthFilter.class);
         return http.build();
     }
 
