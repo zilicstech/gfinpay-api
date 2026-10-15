@@ -81,6 +81,11 @@ class PaysprintOnboardOutcomeTest {
                 "FIXED_DEPOSIT",
                 "1",
                 true,
-                "secret");
+                "secret",
+                "wadh-bank2-value",
+                "wadh-bank6-value",
+                "PP",
+                "0",
+                false);
     }
 }

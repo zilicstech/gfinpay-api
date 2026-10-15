@@ -9,7 +9,10 @@ app:
     # Must stay false: the refresh cookie needs credentialed CORS, which cannot be paired
     # with wildcard origins. The dev UI origin is listed explicitly below.
     allow-all-origins: false
-    allowed-origins: http://localhost:3001
+    allowed-origins: http://localhost:3001,http://192.168.68.105:3001
+  paysprint:
+    rd-env: P
+    allow-pasted-pid: true
 
 logging:
   level:

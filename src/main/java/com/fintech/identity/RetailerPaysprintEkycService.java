@@ -43,14 +43,56 @@ public class RetailerPaysprintEkycService {
         this.publicAppUrl = PublicAppUrl.canonicalOrigin(publicAppUrl);
     }
 
+    /** Current onboarding row, without creating a link or calling PaySprint. */
+    public Map<String, Object> currentForRetailer(UUID retailerId) {
+        Map<String, Object> row = loadRetailer(retailerId);
+        String status = text(row.get("kyc_status"));
+        if (status.isBlank()) {
+            status = "PENDING";
+        }
+        String token = text(row.get("paysprint_onboard_token"));
+        if ("COMPLETED".equals(status) || token.isBlank()) {
+            return onboarding(status, null, false, "");
+        }
+        return onboarding(status, portalLink(token), true, "Onboarding is still in progress. Open the link to continue.");
+    }
+
+    /**
+     * What the retailer sees on opening KYC. A missing link is created and marked in progress.
+     * An existing link is checked with PaySprint before the page decides to keep showing it.
+     */
+    public Map<String, Object> syncForRetailer(UUID retailerId) {
+        Map<String, Object> row = loadRetailer(retailerId);
+        String status = text(row.get("kyc_status"));
+        if (status.isBlank()) {
+            status = "PENDING";
+        }
+        if ("COMPLETED".equals(status)) {
+            return onboarding(status, null, false, "Onboarding is complete.");
+        }
+        String token = text(row.get("paysprint_onboard_token"));
+        if (token.isBlank()) {
+            token = ensureLinkToken(retailerId, "");
+            markInProgress(retailerId);
+            return onboarding("IN PROGRESS", portalLink(token), true, "Open this link to finish onboarding.");
+        }
+        String code = text(row.get("code"));
+        String mobile = digits(text(row.get("mobile")));
+        if (!code.isBlank() && mobile.length() == 10 && refreshAccepted(code, mobile)) {
+            return onboarding("COMPLETED", null, false, "Onboarding is complete.");
+        }
+        markInProgress(retailerId);
+        return onboarding("IN PROGRESS", portalLink(token), true, "Onboarding is still in progress. Open the link to continue.");
+    }
+
     public Map<String, Object> issue(UUID retailerId) {
         return issue(retailerId, null);
     }
 
     public Map<String, Object> issue(UUID retailerId, String suppliedEmail) {
         Map<String, Object> row = loadRetailer(retailerId);
-        if ("VERIFIED".equals(String.valueOf(row.get("kyc_status")))) {
-            return result("VERIFIED", null, "eKYC is already completed.");
+        if ("COMPLETED".equals(String.valueOf(row.get("kyc_status")))) {
+            return result("COMPLETED", null, "eKYC is already completed.");
         }
         String code = text(row.get("code"));
         String mobile = digits(text(row.get("mobile")));
@@ -74,12 +116,12 @@ public class RetailerPaysprintEkycService {
 
         boolean issued = row.get("paysprint_onboard_issued_at") != null;
         if (issued && refreshAccepted(code, mobile)) {
-            return result("VERIFIED", null, "eKYC is completed.");
+            return result("COMPLETED", null, "eKYC is completed.");
         }
         String token = ensureLinkToken(retailerId, text(row.get("paysprint_onboard_token")));
         String link = publicAppUrl + "/ekyc/" + token;
         log.info("PAYSPRINT_ONBOARD portal link merchantcode={} email_present={}", code, !email.isBlank());
-        return result(text(row.get("kyc_status")).isBlank() ? "NOT_STARTED" : text(row.get("kyc_status")),
+        return result(text(row.get("kyc_status")).isBlank() ? "PENDING" : text(row.get("kyc_status")),
                 link, "Open this link to continue to PaySprint eKYC.");
     }
 
@@ -89,8 +131,8 @@ public class RetailerPaysprintEkycService {
      */
     public Map<String, Object> refreshOnboardUrl(UUID retailerId) {
         Map<String, Object> row = loadRetailer(retailerId);
-        if ("VERIFIED".equals(String.valueOf(row.get("kyc_status")))) {
-            return result("VERIFIED", null, "eKYC is already completed.");
+        if ("COMPLETED".equals(String.valueOf(row.get("kyc_status")))) {
+            return result("COMPLETED", null, "eKYC is already completed.");
         }
         String code = text(row.get("code"));
         String mobile = digits(text(row.get("mobile")));
@@ -128,20 +170,21 @@ public class RetailerPaysprintEkycService {
                     PaysprintMessages.fromNode(root, "Paysprint did not return an onboarding link"));
         }
         replaceRedirect(retailerId, redirect);
-        return result(text(row.get("kyc_status")).isBlank() ? "NOT_STARTED" : text(row.get("kyc_status")),
+        markInProgress(retailerId);
+        return result("IN PROGRESS",
                 publicAppUrl + "/ekyc/" + token,
-                "A new onboarding link is ready. Share it again so the retailer can continue.");
+                "A new onboarding link is ready. Open it to continue.");
     }
 
     public Map<String, Object> publicStatus(String token) {
         Map<String, Object> row = loadByToken(token);
-        boolean verified = "VERIFIED".equals(String.valueOf(row.get("kyc_status")));
+        boolean verified = "COMPLETED".equals(String.valueOf(row.get("kyc_status")));
         return Map.of("active", !verified, "kyc_status", String.valueOf(row.get("kyc_status")));
     }
 
     public Map<String, String> start(String token) {
         Map<String, Object> row = loadByToken(token);
-        if ("VERIFIED".equals(String.valueOf(row.get("kyc_status")))) {
+        if ("COMPLETED".equals(String.valueOf(row.get("kyc_status")))) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "EKYC_COMPLETED",
                     "eKYC is already completed.");
         }
@@ -206,7 +249,7 @@ public class RetailerPaysprintEkycService {
         String token = UUID.randomUUID().toString().replace("-", "");
         jdbc.update("""
                 INSERT INTO agent_kyc_profiles (user_id, kyc_status, paysprint_onboard_token)
-                VALUES (?, 'NOT_STARTED', ?)
+                VALUES (?, 'PENDING', ?)
                 ON CONFLICT (user_id) DO UPDATE
                    SET paysprint_onboard_token = COALESCE(agent_kyc_profiles.paysprint_onboard_token, EXCLUDED.paysprint_onboard_token),
                        updated_at = now()
@@ -233,6 +276,16 @@ public class RetailerPaysprintEkycService {
         } catch (EmptyResultDataAccessException e) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "LINK_NOT_FOUND", "This link is not valid");
         }
+    }
+
+    /** Verified JWT claims for an onboard POST. Does not change the retailer. */
+    public JsonNode verifiedClaims(JsonNode body) {
+        return verifyEnc(body);
+    }
+
+    /** Verified redirect token. Does not change the retailer. */
+    public JsonNode redirectClaims(String data) {
+        return jwt.verify(data);
     }
 
     /** Charge callback is an acknowledgement only. The JWT must verify. */
@@ -325,8 +378,8 @@ public class RetailerPaysprintEkycService {
             message = accepted ? "Onboarding completed" : "PaySprint did not return an onboarding status.";
         }
         String kyc = accepted
-                ? "VERIFIED"
-                : (text(row.get("kyc_status")).isBlank() ? "NOT_STARTED" : text(row.get("kyc_status")));
+                ? "COMPLETED"
+                : (text(row.get("kyc_status")).isBlank() ? "PENDING" : text(row.get("kyc_status")));
         return statusResult(kyc, approved, message, accepted, portalLink(text(row.get("paysprint_onboard_token"))));
     }
 
@@ -364,13 +417,30 @@ public class RetailerPaysprintEkycService {
         }
         jdbc.update("""
                 INSERT INTO agent_kyc_profiles (user_id, kyc_status, aadhaar_verified_at)
-                VALUES (?, 'VERIFIED', now())
+                VALUES (?, 'COMPLETED', now())
                 ON CONFLICT (user_id) DO UPDATE
-                   SET kyc_status = 'VERIFIED',
+                   SET kyc_status = 'COMPLETED',
                        aadhaar_verified_at = COALESCE(agent_kyc_profiles.aadhaar_verified_at, now()),
                        updated_at = now()
                 """, userId);
         log.info("PAYSPRINT_ONBOARD verified merchantcode={}", code);
+    }
+
+    private void markInProgress(UUID retailerId) {
+        jdbc.update("""
+                UPDATE agent_kyc_profiles
+                   SET kyc_status = 'IN PROGRESS', updated_at = now()
+                 WHERE user_id = ? AND kyc_status IS DISTINCT FROM 'COMPLETED'
+                """, retailerId);
+    }
+
+    private static Map<String, Object> onboarding(String kycStatus, String url, boolean canRefresh, String message) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("kycStatus", kycStatus);
+        out.put("onboardingUrl", url);
+        out.put("canRefresh", canRefresh);
+        out.put("message", message);
+        return out;
     }
 
     /** Keeps the first PaySprint URL for this retailer. Later opens reuse it. */

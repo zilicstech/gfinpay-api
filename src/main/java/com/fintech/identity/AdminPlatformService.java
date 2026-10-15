@@ -151,7 +151,7 @@ public class AdminPlatformService {
                 SELECT count(*)::int AS pending
                   FROM agent_kyc_profiles k
                   JOIN users u ON u.id = k.user_id
-                 WHERE k.kyc_status IS DISTINCT FROM 'VERIFIED'
+                 WHERE k.kyc_status IS DISTINCT FROM 'COMPLETED'
                 """);
         List<Object> kycArgs = new ArrayList<>();
         access.appendHubFilter(kycSql, kycArgs, "u.hub_id");
@@ -475,7 +475,7 @@ public class AdminPlatformService {
         if ("MASTER_DISTRIBUTOR".equals(type)) {
             user.put("retailers", jdbc.queryForList("""
                     SELECT u.id, u.full_name, u.mobile, u.code, u.status::text AS status,
-                           k.kyc_status::text AS kyc_status,
+                           k.kyc_status::text AS kyc_status, k.bank_status,
                            k.shop_address->>'city' AS city,
                            k.shop_address->>'state' AS state,
                            k.shop_address->>'pincode' AS pincode
@@ -730,7 +730,7 @@ public class AdminPlatformService {
     public List<Map<String, Object>> listKyc(UUID distributorId, UUID userId, int limit, int offset) {
         StringBuilder sql = new StringBuilder("""
                 SELECT k.user_id, u.full_name, u.mobile, u.status::text AS user_status,
-                       k.shop_name, k.kyc_status::text AS kyc_status, k.rejection_reason,
+                       k.shop_name, k.kyc_status::text AS kyc_status, k.bank_status, k.rejection_reason,
                        k.aadhaar_last4, k.gstin, k.created_at, k.updated_at,
                        p.full_name AS distributor_name, u.parent_id AS distributor_id
                   FROM agent_kyc_profiles k
@@ -758,7 +758,7 @@ public class AdminPlatformService {
         access.assertNetworkUser(userId);
         Map<String, Object> row = one("""
                 SELECT k.user_id, u.full_name, u.mobile, u.status::text AS user_status,
-                       k.shop_name, k.gstin, k.kyc_status::text AS kyc_status, k.rejection_reason,
+                       k.shop_name, k.gstin, k.kyc_status::text AS kyc_status, k.bank_status, k.rejection_reason,
                        k.aadhaar_last4, k.aadhaar_verified_at, k.pan_verified_at,
                        k.liveness_score, k.documents, k.created_at, k.updated_at,
                        p.full_name AS distributor_name, u.parent_id AS distributor_id
@@ -773,10 +773,12 @@ public class AdminPlatformService {
     @Transactional
     public Map<String, Object> reviewKyc(UUID userId, String decision, String reason) {
         access.assertNetworkUser(userId);
-        if (!"VERIFIED".equals(decision) && !"REJECTED".equals(decision)) {
-            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_DECISION", "Decision must be VERIFIED or REJECTED");
+        String stored = "VERIFIED".equals(decision) || "COMPLETED".equals(decision) ? "COMPLETED"
+                : "REJECTED".equals(decision) || "FAILED".equals(decision) ? "FAILED" : "";
+        if (stored.isBlank()) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_DECISION", "Decision must be COMPLETED or FAILED");
         }
-        int n = kycProfiles.updateStatus(userId, decision, reason);
+        int n = kycProfiles.updateStatus(userId, stored, reason);
         if (n == 0) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "KYC_NOT_FOUND", "No KYC profile for this outlet");
         }
@@ -965,7 +967,7 @@ public class AdminPlatformService {
             if ("MASTER_DISTRIBUTOR".equals(userType)) {
                 jdbc.update("""
                         INSERT INTO agent_kyc_profiles (user_id, kyc_status)
-                        VALUES (?, 'NOT_STARTED')
+                        VALUES (?, 'PENDING')
                         """, userId);
             }
             if ("RETAILER".equals(userType)) {
@@ -976,7 +978,7 @@ public class AdminPlatformService {
                         "pincode", retailerPincode.trim()));
                 jdbc.update("""
                         INSERT INTO agent_kyc_profiles (user_id, shop_address, kyc_status)
-                        VALUES (?, ?::jsonb, 'NOT_STARTED')
+                        VALUES (?, ?::jsonb, 'PENDING')
                         """, userId, addressJson);
             }
             log.info("ONBOARD success userId={} type={}", userId, userType);
@@ -1051,7 +1053,7 @@ public class AdminPlatformService {
 
     private Map<String, Object> loadAgentKyc(UUID userId) {
         List<Map<String, Object>> kyc = jdbc.queryForList("""
-                SELECT shop_name, gstin, kyc_status::text AS kyc_status, rejection_reason,
+                SELECT shop_name, gstin, kyc_status::text AS kyc_status, bank_status, rejection_reason,
                        ovd_type, aadhaar_last4, aadhaar_verified_at, pan_verified_at, created_at,
                        paysprint_onboard_issued_at,
                        shop_address->>'city' AS city,
@@ -1059,7 +1061,17 @@ public class AdminPlatformService {
                        shop_address->>'pincode' AS pincode
                   FROM agent_kyc_profiles WHERE user_id = ?
                 """, userId);
-        return kyc.isEmpty() ? null : kyc.get(0);
+        if (kyc.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> row = kyc.get(0);
+        row.put("banks", jdbc.queryForList("""
+                SELECT bank_name, status, completed_at, last_message
+                  FROM paysprint_bank_ekyc
+                 WHERE user_id = ?
+                 ORDER BY bank_name
+                """, userId));
+        return row;
     }
 
     private static String userListSql(String where) {
@@ -1077,7 +1089,7 @@ public class AdminPlatformService {
                                     WHERE ha3.hub_id = h2.id AND ha3.user_id = u.id
                                )
                        ), h.name, '') AS hub_names,
-                       k.shop_name, k.kyc_status::text AS kyc_status,
+                       k.shop_name, k.kyc_status::text AS kyc_status, k.bank_status,
                        k.shop_address->>'city' AS retailer_city,
                        k.shop_address->>'state' AS retailer_state,
                        k.shop_address->>'pincode' AS retailer_pincode

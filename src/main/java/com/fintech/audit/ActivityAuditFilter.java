@@ -28,7 +28,8 @@ public class ActivityAuditFilter extends OncePerRequestFilter {
     private static final Set<String> MUTATING = Set.of("POST", "PUT", "PATCH", "DELETE");
     private static final Set<String> SECRET_KEYS = Set.of(
             "password", "token", "otp", "pin", "aadhaar", "pan", "secret", "authorization",
-            "refresh", "proof", "cookie", "authorisedkey", "jwt", "access_token", "refresh_token");
+            "refresh", "proof", "cookie", "authorisedkey", "jwt", "access_token", "refresh_token",
+            "piddata", "pid", "wadh", "skey", "hmac", "dob");
 
     private final ActivityAuditWriter writer;
     private final ObjectMapper mapper;

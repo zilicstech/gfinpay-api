@@ -104,6 +104,9 @@ public final class ActivityActions {
             rule("POST", "/api/v1/cashout/upi/[^/]+/paid", "Cash Out Paid"),
             rule("POST", "/api/v1/cashout/upi/[^/]+/dispense", "Cash Given"),
             rule("POST", "/api/v1/cashout/upi", "Cash Out Started"),
+            rule("POST", "/api/v1/me/ekyc/onboarding/refresh", "Onboarding Link Refreshed"),
+            rule("POST", "/api/v1/me/ekyc/device-event", "eKYC Device Check"),
+            rule("POST", "/api/v1/me/ekyc/[^/]+/activate", "Merchant eKYC"),
             rule("PATCH", "/api/v1/me", "Profile Updated"),
             rule("POST", "/api/v1/me/password", "Password Changed")
     );

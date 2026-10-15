@@ -161,7 +161,7 @@ public class UserService {
                 String addressJson = toAddressJson(city, state, pincode);
                 jdbc.update("""
                         INSERT INTO agent_kyc_profiles (user_id, shop_address, kyc_status)
-                        VALUES (?, ?::jsonb, 'NOT_STARTED')
+                        VALUES (?, ?::jsonb, 'PENDING')
                         """, userId, addressJson);
             }
             log.info("ONBOARD success userId={} type={} walletId={}", userId, userType, walletId);

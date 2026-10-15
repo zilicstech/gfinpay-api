@@ -42,6 +42,14 @@ public class CashoutService {
 
     @Transactional
     public Map<String, Object> startUpi(AuthPrincipal me, BigDecimal amount, String customerName, String customerMobile) {
+        Integer ready = jdbc.queryForObject("""
+                SELECT count(*)::int FROM paysprint_bank_ekyc
+                 WHERE user_id = ? AND bank_name = 'bank6' AND status = 'SUCCESS'
+                """, Integer.class, me.userId());
+        if (ready == null || ready == 0) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "EKYC_REQUIRED",
+                    "Finish cash out eKYC before giving cash.");
+        }
         FeatureUnavailable.throwIfCalled();
         services.requireEnabled(PlatformServiceGate.UPI_CASHOUT);
         if (amount == null || amount.compareTo(BigDecimal.ONE) < 0) {

@@ -2,8 +2,10 @@ package com.fintech.paysprint;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fintech.identity.RetailerPaysprintEkycService;
 import com.fintech.identity.RetailerPaysprintEkycService.PaysprintCallbackRejected;
+import com.fintech.platform.webhook.ProviderCallbackLog;
 import io.jsonwebtoken.JwtException;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -25,11 +27,16 @@ public class PaysprintOnboardCallbackController {
 
     private static final Logger log = LoggerFactory.getLogger(PaysprintOnboardCallbackController.class);
 
+    private static final String PROVIDER = "paysprint";
+
     private final RetailerPaysprintEkycService ekyc;
+    private final ProviderCallbackLog callbacks;
     private final ObjectMapper mapper;
 
-    public PaysprintOnboardCallbackController(RetailerPaysprintEkycService ekyc, ObjectMapper mapper) {
+    public PaysprintOnboardCallbackController(RetailerPaysprintEkycService ekyc, ProviderCallbackLog callbacks,
+                                              ObjectMapper mapper) {
         this.ekyc = ekyc;
+        this.callbacks = callbacks;
         this.mapper = mapper;
     }
 
@@ -40,23 +47,40 @@ public class PaysprintOnboardCallbackController {
             body = mapper.readTree(rawBody == null ? "" : rawBody);
         } catch (Exception e) {
             log.info("PAYSPRINT_ONBOARD callback rejected reason=invalid_json");
+            callbacks.record(PROVIDER, "onboard", null, null, null, null, "REJECTED", "invalid_json");
             return failed();
         }
         String event = body.path("event").asText("");
         log.info("PAYSPRINT_ONBOARD callback event={} merchantcode={}", event, merchantCode(body));
         try {
             if ("MERCHANT_ONBOARDING".equals(event)) {
-                ekyc.verifyCharge(body);
+                JsonNode claims = ekyc.verifyCharge(body);
+                callbacks.record(PROVIDER, "onboard", event, statusOf(body, claims), merchantCode(body),
+                        document(event, body, claims), "IGNORED", null);
                 return completed();
             }
             if ("MERCHANT_STATUS_ONBOARD".equals(event)) {
-                ekyc.applyStatus(body);
+                JsonNode claims = ekyc.verifiedClaims(body);
+                JsonNode stored = document(event, body, claims);
+                boolean applied = PaysprintOnboardOutcome.statusCallbackComplete(body.path("param"));
+                try {
+                    ekyc.applyStatus(body);
+                } catch (PaysprintCallbackRejected e) {
+                    log.info("PAYSPRINT_ONBOARD callback rejected reason={}", e.getMessage());
+                    callbacks.record(PROVIDER, "onboard", event, statusOf(body, claims), merchantCode(body),
+                            stored, "REJECTED", e.getMessage());
+                    return failed();
+                }
+                callbacks.record(PROVIDER, "onboard", event, statusOf(body, claims), merchantCode(body),
+                        stored, applied ? "APPLIED" : "IGNORED", null);
                 return completed();
             }
             log.info("PAYSPRINT_ONBOARD callback rejected reason=unknown_event");
+            callbacks.record(PROVIDER, "onboard", event, null, merchantCode(body), null, "REJECTED", "unknown_event");
             return failed();
         } catch (PaysprintCallbackRejected | JwtException | IllegalArgumentException e) {
             log.info("PAYSPRINT_ONBOARD callback rejected reason={}", e.getMessage());
+            callbacks.record(PROVIDER, "onboard", event, null, merchantCode(body), null, "REJECTED", e.getMessage());
             return failed();
         }
     }
@@ -64,18 +88,73 @@ public class PaysprintOnboardCallbackController {
     @GetMapping(produces = MediaType.TEXT_HTML_VALUE)
     public ResponseEntity<String> redirect(@RequestParam(value = "data", required = false) String data) {
         if (data == null || data.isBlank()) {
+            callbacks.record(PROVIDER, "redirect", null, null, null, null, "REJECTED", "missing_token");
+            return html(HttpStatus.BAD_REQUEST, "This eKYC result could not be confirmed.");
+        }
+        JsonNode claims;
+        try {
+            claims = ekyc.redirectClaims(data);
+        } catch (PaysprintCallbackRejected | JwtException | IllegalArgumentException e) {
+            log.info("PAYSPRINT_ONBOARD redirect rejected reason={}", e.getMessage());
+            callbacks.record(PROVIDER, "redirect", null, null, null, null, "REJECTED", e.getMessage());
             return html(HttpStatus.BAD_REQUEST, "This eKYC result could not be confirmed.");
         }
         try {
             boolean done = ekyc.applyRedirect(data);
+            callbacks.record(PROVIDER, "redirect", text(claims, "event"), statusOf(null, claims),
+                    first(claims, "merchantcode", "merchant_id"), claims, done ? "APPLIED" : "IGNORED", null);
             if (done) {
                 return html(HttpStatus.OK, "eKYC is completed. You can close this page.");
             }
             return html(HttpStatus.OK, "eKYC is not finished yet. Close this page and open the link again.");
         } catch (PaysprintCallbackRejected | JwtException | IllegalArgumentException e) {
             log.info("PAYSPRINT_ONBOARD redirect rejected reason={}", e.getMessage());
+            callbacks.record(PROVIDER, "redirect", text(claims, "event"), statusOf(null, claims),
+                    first(claims, "merchantcode", "merchant_id"), claims, "REJECTED", e.getMessage());
             return html(HttpStatus.BAD_REQUEST, "This eKYC result could not be confirmed.");
         }
+    }
+
+    private JsonNode document(String event, JsonNode body, JsonNode claims) {
+        ObjectNode document = mapper.createObjectNode();
+        document.put("event", event);
+        JsonNode param = body.path("param");
+        if (param.isObject()) {
+            document.set("param", param);
+        }
+        if (claims != null && !claims.isNull()) {
+            document.set("claims", claims);
+        }
+        return document;
+    }
+
+    private static String statusOf(JsonNode body, JsonNode claims) {
+        String fromParam = body == null ? "" : first(body.path("param"), "status", "txn_status", "ex_status");
+        if (!fromParam.isBlank()) {
+            return fromParam;
+        }
+        return first(claims, "status", "txn_status", "ex_status");
+    }
+
+    private static String first(JsonNode node, String... fields) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return "";
+        }
+        for (String field : fields) {
+            String value = node.path(field).asText("").trim();
+            if (!value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    private static String text(JsonNode node, String field) {
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        String value = node.path(field).asText("").trim();
+        return value.isBlank() ? null : value;
     }
 
     private static String merchantCode(JsonNode body) {

@@ -107,7 +107,7 @@ public class DeskService {
             out.put("pendingKyc", integer("""
                     SELECT count(*) FROM agent_kyc_profiles k
                       JOIN users u ON u.id = k.user_id
-                     WHERE u.parent_id = ? AND k.kyc_status <> 'VERIFIED'
+                     WHERE u.parent_id = ? AND k.kyc_status <> 'COMPLETED'
                     """, new Object[]{me.userId()}));
             out.put("walletFloat", decimal("""
                     SELECT COALESCE(sum(w.available_balance + w.hold_balance),0)
@@ -141,7 +141,7 @@ public class DeskService {
                            k.kyc_status::text AS kyc_status, w.status AS wallet_status,
                            CASE
                              WHEN u.status <> 'ACTIVE' THEN 'Outlet is not active'
-                             WHEN k.kyc_status IS NOT NULL AND k.kyc_status <> 'VERIFIED' THEN 'KYC needs attention'
+                             WHEN k.kyc_status IS NOT NULL AND k.kyc_status <> 'COMPLETED' THEN 'KYC needs attention'
                              WHEN w.status = 'FROZEN' THEN 'Till is frozen'
                              ELSE 'Review'
                            END AS reason
@@ -150,7 +150,7 @@ public class DeskService {
                       LEFT JOIN wallets w ON w.user_id = u.id
                      WHERE u.parent_id = ? AND u.user_type = 'RETAILER'
                        AND (u.status <> 'ACTIVE'
-                            OR COALESCE(k.kyc_status, 'VERIFIED') <> 'VERIFIED'
+                            OR COALESCE(k.kyc_status, 'COMPLETED') <> 'COMPLETED'
                             OR COALESCE(w.status, 'ACTIVE') = 'FROZEN')
                      ORDER BY u.full_name
                      LIMIT 10
@@ -244,7 +244,7 @@ public class DeskService {
                 SELECT u.id, u.user_type::text AS user_type, u.full_name, u.mobile, u.email, u.code,
                        u.status::text AS status, u.created_at, u.created_by, u.parent_id, u.hub_id,
                        c.full_name AS created_by_name, c.code AS created_by_code,
-                       h.name AS hub_name, k.shop_name, k.kyc_status::text AS kyc_status,
+                       h.name AS hub_name, k.shop_name, k.kyc_status::text AS kyc_status, k.bank_status,
                        k.shop_address->>'city' AS retailer_city,
                        k.shop_address->>'state' AS retailer_state,
                        k.shop_address->>'pincode' AS retailer_pincode,

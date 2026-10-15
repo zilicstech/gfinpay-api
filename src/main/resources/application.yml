@@ -81,6 +81,11 @@ app:
     fd-card-type: ${PAYSPRINT_FD_CARD_TYPE:1}
     callback-enabled: true
     callback-secret: ${PAYSPRINT_CALLBACK_SECRET}
+    wadh-bank2: ${PAYSPRINT_WADH_BANK2:18f4CEiXeXcfGXvgWA/blxD+w2pw7hfQPY45JMytkPw=}
+    wadh-bank6: ${PAYSPRINT_WADH_BANK6:E0jzJ/P8UopUHAieZn8CKqS4WPMi5ZSYXgfnlfkWjrc=}
+    rd-env: ${PAYSPRINT_RD_ENV:P}
+    is-casa: ${PAYSPRINT_IS_CASA:0}
+    allow-pasted-pid: ${PAYSPRINT_ALLOW_PASTED_PID:false}
   kbill:
     base-url: ${APP_KBILL_BASE_URL:}
     api-token: ${APP_KBILL_API_TOKEN:}

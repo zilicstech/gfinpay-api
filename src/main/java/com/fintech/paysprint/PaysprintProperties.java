@@ -15,7 +15,12 @@ public record PaysprintProperties(
         /** 0 = unsecured, 1 = secured FD card. Generate UTM uses 1. */
         String fdCardType,
         boolean callbackEnabled,
-        String callbackSecret) {
+        String callbackSecret,
+        String wadhBank2,
+        String wadhBank6,
+        String rdEnv,
+        String isCasa,
+        boolean allowPastedPid) {
 
     public String merchantCodeOrPartner() {
         if (merchantCode == null || merchantCode.isBlank()) {
@@ -29,5 +34,17 @@ public record PaysprintProperties(
             return "1";
         }
         return fdCardType;
+    }
+
+    public String wadhFor(String pipe) {
+        return "bank6".equals(pipe) ? wadhBank6 : wadhBank2;
+    }
+
+    public String rdEnvOrLive() {
+        return rdEnv == null || rdEnv.isBlank() ? "P" : rdEnv;
+    }
+
+    public String isCasaOrOff() {
+        return isCasa == null || isCasa.isBlank() ? "0" : isCasa;
     }
 }

@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
-/** PaySprint hosted merchant onboarding. Does not call activate_merchant. */
+/** PaySprint hosted merchant onboarding and biometric activation. */
 @Component
 public class PaysprintOnboardClient {
 
@@ -26,6 +26,8 @@ public class PaysprintOnboardClient {
     private static final String SIT_ONBOARD_URL_PATH = "/onboard/onboardnew/getonboardurl";
     private static final String LIVE_ONBOARD_URL_PATH = "/onboard/onboard/getonboardurl";
     private static final String STATUS_PATH = "/onboard/onboard/getonboardstatus";
+    private static final String LIVE_ACTIVATE_PATH = "/onboard/onboard/activate_merchant";
+    private static final String SIT_ACTIVATE_PATH = "/onboard/onboardnew/activate_merchant";
     private static final String PIPE = "bank2";
 
     private final PaysprintProperties props;
@@ -60,34 +62,67 @@ public class PaysprintOnboardClient {
 
     /** Bank 2 pipe status. A false status means not onboarded yet and is returned as-is. */
     public JsonNode onboardStatus(String merchantCode, String mobile) {
+        return onboardStatus(merchantCode, mobile, PIPE);
+    }
+
+    public JsonNode onboardStatus(String merchantCode, String mobile, String pipe) {
         Map<String, String> body = new LinkedHashMap<>();
         body.put("merchantcode", merchantCode);
         body.put("mobile", mobile);
-        body.put("pipe", PIPE);
-        log.info("PAYSPRINT_ONBOARD status merchantcode={} pipe={}", merchantCode, PIPE);
+        body.put("pipe", pipe);
+        log.info("PAYSPRINT_ONBOARD status merchantcode={} pipe={}", merchantCode, pipe);
         return post(STATUS_PATH, body, false);
+    }
+
+    public JsonNode activateMerchant(String merchantCode, String aadhaar, String encryptedPid, String dob,
+                                     String pipe, String isCasa, String accessMode, String latitude, String longitude) {
+        Map<String, String> body = new LinkedHashMap<>();
+        body.put("merchantcode", merchantCode);
+        body.put("aadhaar", aadhaar);
+        body.put("piddata", encryptedPid);
+        body.put("dob", dob);
+        body.put("is_casa", isCasa);
+        body.put("pipe", pipe);
+        if ("bank6".equals(pipe)) {
+            body.put("accessmode", accessMode);
+            body.put("latitude", latitude);
+            body.put("longitude", longitude);
+        }
+        log.info("MERCHANT_EKYC paysprint request pipe={} merchantcode={} pid_length={}",
+                pipe, merchantCode, encryptedPid == null ? 0 : encryptedPid.length());
+        return post(activatePath(), body, false);
     }
 
     /** SIT only serves the OpenAPI path. Live returns 404 for that path. */
     private String onboardUrlPath() {
+        return sit() ? SIT_ONBOARD_URL_PATH : LIVE_ONBOARD_URL_PATH;
+    }
+
+    private String activatePath() {
+        return sit() ? SIT_ACTIVATE_PATH : LIVE_ACTIVATE_PATH;
+    }
+
+    private boolean sit() {
         String base = props.baseUrl() == null ? "" : props.baseUrl();
-        if (base.contains("sit.paysprint.in")) {
-            return SIT_ONBOARD_URL_PATH;
-        }
-        return LIVE_ONBOARD_URL_PATH;
+        return base.contains("sit.paysprint.in");
     }
 
     private JsonNode post(String path, Map<String, String> body, boolean requireStatus) {
         String url = props.baseUrl() + path;
-        log.info("PAYSPRINT_API request POST {} body={}", url, mapper.valueToTree(body));
+        // The JDK client sends an unsized body as chunked transfer. PaySprint then
+        // sees an empty request and answers that every field is required.
+        byte[] json = jsonBytes(body);
+        log.info("PAYSPRINT_API request POST {} bytes={} body={}", url, json.length, redacted(body));
         String raw;
         try {
             raw = restClient.post()
                     .uri(url)
                     .contentType(MediaType.APPLICATION_JSON)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .contentLength(json.length)
                     .header("Token", tokens.create())
                     .header("Authorisedkey", props.authorisedKey())
-                    .body(body)
+                    .body(json)
                     .retrieve()
                     .body(String.class);
             log.info("PAYSPRINT_API response POST {} status=200 body={}", url, logBody(raw));
@@ -111,6 +146,28 @@ public class PaysprintOnboardClient {
             throw ApiException.of(HttpStatus.BAD_GATEWAY, "PAYSPRINT_ONBOARD_ERROR",
                     "Could not parse Paysprint response");
         }
+    }
+
+    private byte[] jsonBytes(Map<String, String> body) {
+        try {
+            return mapper.writeValueAsBytes(body);
+        } catch (Exception e) {
+            throw ApiException.of(HttpStatus.BAD_GATEWAY, "PAYSPRINT_ONBOARD_ERROR",
+                    "Could not prepare the Paysprint request");
+        }
+    }
+
+    private static String redacted(Map<String, String> body) {
+        Map<String, Object> safe = new LinkedHashMap<>();
+        body.forEach((key, value) -> {
+            String name = key.toLowerCase(java.util.Locale.ROOT);
+            if (name.equals("aadhaar") || name.equals("piddata") || name.equals("dob")) {
+                safe.put(key + "_length", value == null ? 0 : value.length());
+            } else {
+                safe.put(key, value);
+            }
+        });
+        return safe.toString();
     }
 
     private static String logBody(String raw) {
