@@ -56,7 +56,7 @@ public class CashoutService {
         }
         String code = merchantCode(me.userId());
         String url = paysprint.getToken(code, publicAppUrl + "/agent/cash-out/upi/return");
-        log.info("UPI_CASHOUT token issued merchantcode={} url_present={}", code, url != null && !url.isBlank());
+        log.info("UPI_CASHOUT token issued merchantcode={} url={}", code, url);
         return Map.of("url", url);
     }
 
