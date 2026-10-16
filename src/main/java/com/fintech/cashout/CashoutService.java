@@ -1,19 +1,18 @@
 package com.fintech.cashout;
 
-import com.fintech.ledger.LedgerService;
-import com.fintech.ledger.TransactionService;
-import com.fintech.ledger.WalletService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fintech.paysprint.PaysprintUpiCashoutClient;
 import com.fintech.platform.PlatformServiceGate;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiException;
-import com.fintech.platform.web.FeatureUnavailable;
-import java.math.BigDecimal;
+import com.fintech.platform.web.PublicAppUrl;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -24,120 +23,154 @@ public class CashoutService {
 
     private static final Logger log = LoggerFactory.getLogger(CashoutService.class);
 
-    private final JdbcTemplate jdbc;
-    private final WalletService walletService;
-    private final TransactionService transactionService;
-    private final LedgerService ledgerService;
-    private final PlatformServiceGate services;
+    private static final String SESSION_COLUMNS = """
+            c.id, c.amount, c.status::text AS status, c.customer_name, c.customer_mobile,
+            c.bank_rrn, c.ackno, c.err_code, c.err_msg, c.payer_name, c.provider_refid,
+            c.expires_at, c.paid_at, c.dispensed_at, c.created_at
+            """;
 
-    public CashoutService(JdbcTemplate jdbc, WalletService walletService,
-                          TransactionService transactionService, LedgerService ledgerService,
-                          PlatformServiceGate services) {
+    private final JdbcTemplate jdbc;
+    private final PlatformServiceGate services;
+    private final PaysprintUpiCashoutClient paysprint;
+    private final UpiCashoutCallbackService callbacks;
+    private final String publicAppUrl;
+
+    public CashoutService(JdbcTemplate jdbc,
+                          PlatformServiceGate services,
+                          PaysprintUpiCashoutClient paysprint,
+                          UpiCashoutCallbackService callbacks,
+                          @Value("${app.public-app-url}") String publicAppUrl) {
         this.jdbc = jdbc;
-        this.walletService = walletService;
-        this.transactionService = transactionService;
-        this.ledgerService = ledgerService;
         this.services = services;
+        this.paysprint = paysprint;
+        this.callbacks = callbacks;
+        this.publicAppUrl = PublicAppUrl.canonicalOrigin(publicAppUrl);
     }
 
-    @Transactional
-    public Map<String, Object> startUpi(AuthPrincipal me, BigDecimal amount, String customerName, String customerMobile) {
-        Integer ready = jdbc.queryForObject("""
-                SELECT count(*)::int FROM paysprint_bank_ekyc
-                 WHERE user_id = ? AND bank_name = 'bank6' AND status = 'SUCCESS'
-                """, Integer.class, me.userId());
-        if (ready == null || ready == 0) {
+    /** Opens PaySprint's hosted page. The cash-out row is created later, by their initiate callback. */
+    public Map<String, Object> startUpi(AuthPrincipal me) {
+        services.requireEnabled(PlatformServiceGate.UPI_CASHOUT);
+        if (!bank6Ready(me.userId())) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "EKYC_REQUIRED",
                     "Finish cash out eKYC before giving cash.");
         }
-        FeatureUnavailable.throwIfCalled();
+        String code = merchantCode(me.userId());
+        String url = paysprint.getToken(code, publicAppUrl + "/agent/cash-out/upi/return");
+        log.info("UPI_CASHOUT token issued merchantcode={} url_present={}", code, url != null && !url.isBlank());
+        return Map.of("url", url);
+    }
+
+    public Map<String, Object> latest(AuthPrincipal me) {
         services.requireEnabled(PlatformServiceGate.UPI_CASHOUT);
-        if (amount == null || amount.compareTo(BigDecimal.ONE) < 0) {
-            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_AMOUNT", "Enter at least ₹1");
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT %s
+                  FROM cashout_sessions c
+                 WHERE c.agent_user_id = ? AND c.created_at > now() - interval '30 minutes'
+                 ORDER BY c.created_at DESC
+                 LIMIT 1
+                """.formatted(SESSION_COLUMNS), me.userId());
+        if (rows.isEmpty()) {
+            return Map.of("status", "NONE");
         }
-        String name = customerName == null ? "" : customerName.trim();
-        if (name.length() < 2) {
-            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "CUSTOMER_REQUIRED",
-                    "Record the customer's name before handing over cash");
-        }
-        String mobile = customerMobile == null ? "" : customerMobile.replaceAll("\\D", "");
-        if (mobile.length() != 10) {
-            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "CUSTOMER_REQUIRED",
-                    "Record a 10-digit mobile for the cash-out log");
-        }
-        WalletService.WalletInfo wallet = walletService.getByUser(me.userId());
-        UUID txnId = transactionService.create("CASHOUT_UPI", me.userId(), wallet.walletId(),
-                amount, BigDecimal.ZERO, null, null, "UPI_PSP", null);
-        UUID sessionId = UUID.randomUUID();
-        String payload = "upi://pay?pa=gfinpay@upi&pn=gfinpay%%20Outlet&am=%s&cu=INR&tn=CASH%s".formatted(
-                amount.toPlainString(), sessionId.toString().substring(0, 8).toUpperCase());
-        jdbc.update("""
-                INSERT INTO cashout_sessions
-                    (id, transaction_id, agent_user_id, channel, amount, upi_qr_payload, status, expires_at,
-                     customer_name, customer_mobile)
-                VALUES (?, ?, ?, 'UPI_QR', ?, ?, 'AWAITING_PAYMENT', now() + interval '10 minutes', ?, ?)
-                """, sessionId, txnId, me.userId(), amount, payload, name, mobile);
-        log.info("CASHOUT_START session={} txn={} amount={} mobile={}", sessionId, txnId, amount, mobile);
-        return get(me, sessionId);
+        return view(rows.get(0));
     }
 
     public Map<String, Object> get(AuthPrincipal me, UUID sessionId) {
         services.requireEnabled(PlatformServiceGate.UPI_CASHOUT);
+        return view(load(me, sessionId));
+    }
+
+    /** Asks PaySprint for the latest status when a callback has not arrived. */
+    @Transactional
+    public Map<String, Object> refresh(AuthPrincipal me, UUID sessionId) {
+        services.requireEnabled(PlatformServiceGate.UPI_CASHOUT);
+        Map<String, Object> session = load(me, sessionId);
+        String status = String.valueOf(session.get("status"));
+        Object ref = session.get("provider_refid");
+        log.info("UPI_CASHOUT refresh session={} refid={} from={}", sessionId, ref, status);
+        if (!"INITIATED".equals(status) && !"AWAITING_PAYMENT".equals(status)) {
+            return view(session);
+        }
+        if (ref == null) {
+            log.info("UPI_CASHOUT refresh session={} result=no_refid", sessionId);
+            return view(session);
+        }
+        JsonNode root = paysprint.txnStatus(merchantCode(me.userId()), String.valueOf(ref));
+        JsonNode data = root.path("data");
+        if (!data.isObject()) {
+            data = root;
+        }
+        if (!UpiCashoutCallbackService.txnStatus(data).isBlank()) {
+            callbacks.acknowledgeOwned(((Number) ref).longValue(), data);
+        } else {
+            log.info("UPI_CASHOUT refresh session={} refid={} result=no_status", sessionId, ref);
+        }
+        Map<String, Object> updated = load(me, sessionId);
+        log.info("UPI_CASHOUT refresh session={} refid={} to={}", sessionId, ref, updated.get("status"));
+        return view(updated);
+    }
+
+    @Transactional
+    public Map<String, Object> dispense(AuthPrincipal me, UUID sessionId) {
+        services.requireEnabled(PlatformServiceGate.UPI_CASHOUT);
+        Map<String, Object> session = load(me, sessionId);
+        if (!"PAID".equals(String.valueOf(session.get("status")))) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "NOT_PAID",
+                    "Hand over cash only after the payment is confirmed");
+        }
+        jdbc.update("""
+                UPDATE cashout_sessions SET status = 'CASH_DISPENSED', dispensed_at = now() WHERE id = ?
+                """, sessionId);
+        log.info("UPI_CASHOUT dispensed session={} refid={}", sessionId, session.get("provider_refid"));
+        return view(load(me, sessionId));
+    }
+
+    private Map<String, Object> load(AuthPrincipal me, UUID sessionId) {
         List<Map<String, Object>> rows = jdbc.queryForList("""
-                SELECT c.id, c.transaction_id, c.amount, c.status::text AS status, c.upi_qr_payload,
-                       c.upi_collect_ref, c.expires_at, c.paid_at, c.dispensed_at, c.created_at,
-                       c.customer_name, c.customer_mobile, t.state::text AS txn_state
+                SELECT %s
                   FROM cashout_sessions c
-                  JOIN transactions t ON t.id = c.transaction_id
                  WHERE c.id = ? AND c.agent_user_id = ?
-                """, sessionId, me.userId());
+                """.formatted(SESSION_COLUMNS), sessionId, me.userId());
         if (rows.isEmpty()) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "CASHOUT_NOT_FOUND", "Cash-out session not found");
         }
         return rows.get(0);
     }
 
-    @Transactional
-    public Map<String, Object> markPaid(AuthPrincipal me, UUID sessionId) {
-        services.requireEnabled(PlatformServiceGate.UPI_CASHOUT);
-        Map<String, Object> session = get(me, sessionId);
-        if (!"AWAITING_PAYMENT".equals(String.valueOf(session.get("status")))) {
-            return session;
-        }
-        UUID txnId = (UUID) session.get("transaction_id");
-        BigDecimal amount = (BigDecimal) session.get("amount");
-        WalletService.WalletInfo wallet = walletService.lockByUser(me.userId());
-        String ref = "UPI" + sessionId.toString().substring(0, 8).toUpperCase();
-        transactionService.transition(txnId, "SUCCESS", ref, null);
-        ledgerService.post(txnId, wallet.walletId(), "CREDIT", amount, "UPI cash-out received");
-        walletService.adjustCache(wallet.walletId(), amount, BigDecimal.ZERO);
-        jdbc.update("""
-                UPDATE cashout_sessions
-                   SET status = 'PAID', upi_collect_ref = ?, paid_at = now()
-                 WHERE id = ?
-                """, ref, sessionId);
-        log.info("CASHOUT_PAID session={} amount={}", sessionId, amount);
-        return get(me, sessionId);
+    private boolean bank6Ready(UUID userId) {
+        Integer ready = jdbc.queryForObject("""
+                SELECT count(*)::int FROM paysprint_bank_ekyc
+                 WHERE user_id = ? AND bank_name = 'bank6' AND status = 'SUCCESS'
+                """, Integer.class, userId);
+        return ready != null && ready > 0;
     }
 
-    @Transactional
-    public Map<String, Object> dispense(AuthPrincipal me, UUID sessionId) {
-        services.requireEnabled(PlatformServiceGate.UPI_CASHOUT);
-        Map<String, Object> session = get(me, sessionId);
-        if (!"PAID".equals(String.valueOf(session.get("status")))) {
-            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "NOT_PAID",
-                    "Hand over cash only after the collect is paid");
+    private String merchantCode(UUID userId) {
+        String code = jdbc.queryForObject("SELECT code FROM users WHERE id = ?", String.class, userId);
+        if (code == null || code.isBlank()) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "MERCHANT_CODE_MISSING",
+                    "This retailer has no merchant code yet");
         }
-        jdbc.update("""
-                UPDATE cashout_sessions SET status = 'CASH_DISPENSED', dispensed_at = now() WHERE id = ?
-                """, sessionId);
-        log.info("CASHOUT_DISPENSED session={}", sessionId);
-        return get(me, sessionId);
+        return code.trim();
     }
 
-    public Map<String, Object> emptySession() {
+    private static Map<String, Object> view(Map<String, Object> row) {
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("status", "NONE");
+        out.put("id", row.get("id"));
+        out.put("amount", row.get("amount"));
+        out.put("status", row.get("status"));
+        out.put("customerName", row.get("customer_name"));
+        out.put("customerMobile", row.get("customer_mobile"));
+        out.put("bankRrn", row.get("bank_rrn"));
+        out.put("ackno", row.get("ackno"));
+        out.put("errCode", row.get("err_code"));
+        out.put("errMsg", row.get("err_msg"));
+        out.put("payerName", row.get("payer_name"));
+        out.put("refid", row.get("provider_refid"));
+        out.put("expiresAt", row.get("expires_at"));
+        out.put("paidAt", row.get("paid_at"));
+        out.put("dispensedAt", row.get("dispensed_at"));
+        out.put("createdAt", row.get("created_at"));
         return out;
     }
 }

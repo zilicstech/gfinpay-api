@@ -3,8 +3,10 @@ package com.fintech.paysprint;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fintech.cashout.UpiCashoutCallbackService;
 import com.fintech.identity.RetailerPaysprintEkycService;
 import com.fintech.identity.RetailerPaysprintEkycService.PaysprintCallbackRejected;
+import com.fintech.platform.web.ApiException;
 import com.fintech.platform.webhook.ProviderCallbackLog;
 import io.jsonwebtoken.JwtException;
 import java.util.Map;
@@ -20,22 +22,31 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/** PaySprint merchant-onboarding callbacks. PID data is never accepted here. */
+/**
+ * The single PaySprint callback. Their portal has one URL, so every event arrives here
+ * and is routed by {@code event}. PID data is never accepted.
+ */
 @RestController
 @RequestMapping("/webhooks/paysprint/onboard")
-public class PaysprintOnboardCallbackController {
+public class PSCallbackController {
 
-    private static final Logger log = LoggerFactory.getLogger(PaysprintOnboardCallbackController.class);
+    private static final Logger log = LoggerFactory.getLogger(PSCallbackController.class);
 
     private static final String PROVIDER = "paysprint";
 
+    private static final String CASHOUT_SOURCE = "upi-cashout";
+
     private final RetailerPaysprintEkycService ekyc;
+    private final UpiCashoutCallbackService cashout;
     private final ProviderCallbackLog callbacks;
     private final ObjectMapper mapper;
 
-    public PaysprintOnboardCallbackController(RetailerPaysprintEkycService ekyc, ProviderCallbackLog callbacks,
-                                              ObjectMapper mapper) {
+    public PSCallbackController(RetailerPaysprintEkycService ekyc,
+                                UpiCashoutCallbackService cashout,
+                                ProviderCallbackLog callbacks,
+                                ObjectMapper mapper) {
         this.ekyc = ekyc;
+        this.cashout = cashout;
         this.callbacks = callbacks;
         this.mapper = mapper;
     }
@@ -46,17 +57,35 @@ public class PaysprintOnboardCallbackController {
         try {
             body = mapper.readTree(rawBody == null ? "" : rawBody);
         } catch (Exception e) {
-            log.info("PAYSPRINT_ONBOARD callback rejected reason=invalid_json");
-            callbacks.record(PROVIDER, "onboard", null, null, null, null, "REJECTED", "invalid_json");
+            log.info("PAYSPRINT_CALLBACK rejected reason=invalid_json");
+            callbacks.record(PROVIDER, "callback", null, null, null, null, "REJECTED", "invalid_json");
             return failed();
         }
         String event = body.path("event").asText("");
-        log.info("PAYSPRINT_ONBOARD callback event={} merchantcode={}", event, merchantCode(body));
+        log.info("PAYSPRINT_CALLBACK event={} merchantcode={}", event, merchantCode(body));
         try {
             if ("MERCHANT_ONBOARDING".equals(event)) {
                 JsonNode claims = ekyc.verifyCharge(body);
                 callbacks.record(PROVIDER, "onboard", event, statusOf(body, claims), merchantCode(body),
                         document(event, body, claims), "IGNORED", null);
+                return completed();
+            }
+            if ("UPI-CASHOUT".equals(event)) {
+                return cashout(body, event);
+            }
+            if ("UPI-CASHOUT-2FA".equals(event)) {
+                JsonNode param = body.path("param");
+                log.info("UPI_CASHOUT in event=UPI-CASHOUT-2FA merchantcode={} status={} device={} accessmode={} chargeable={} message={}",
+                        merchantCode(body),
+                        param.path("status").asText(""),
+                        text(param, "device_mi"),
+                        text(param, "accessmode"),
+                        param.path("is_chargeable").asText(""),
+                        clip(param.path("message").asText("")));
+                cashout.recordTwoFactor(param);
+                callbacks.record(PROVIDER, CASHOUT_SOURCE, event, statusOf(body, null), merchantCode(body),
+                        document(event, body, null), "IGNORED", null);
+                log.info("UPI_CASHOUT out event=UPI-CASHOUT-2FA outcome=IGNORED http=200 merchantcode={}", merchantCode(body));
                 return completed();
             }
             if ("MERCHANT_STATUS_ONBOARD".equals(event)) {
@@ -66,7 +95,7 @@ public class PaysprintOnboardCallbackController {
                 try {
                     ekyc.applyStatus(body);
                 } catch (PaysprintCallbackRejected e) {
-                    log.info("PAYSPRINT_ONBOARD callback rejected reason={}", e.getMessage());
+                    log.info("PAYSPRINT_CALLBACK rejected event={} reason={}", event, e.getMessage());
                     callbacks.record(PROVIDER, "onboard", event, statusOf(body, claims), merchantCode(body),
                             stored, "REJECTED", e.getMessage());
                     return failed();
@@ -75,12 +104,12 @@ public class PaysprintOnboardCallbackController {
                         stored, applied ? "APPLIED" : "IGNORED", null);
                 return completed();
             }
-            log.info("PAYSPRINT_ONBOARD callback rejected reason=unknown_event");
-            callbacks.record(PROVIDER, "onboard", event, null, merchantCode(body), null, "REJECTED", "unknown_event");
+            log.info("PAYSPRINT_CALLBACK rejected event={} reason=unknown_event", event);
+            callbacks.record(PROVIDER, "callback", event, null, merchantCode(body), null, "REJECTED", "unknown_event");
             return failed();
         } catch (PaysprintCallbackRejected | JwtException | IllegalArgumentException e) {
-            log.info("PAYSPRINT_ONBOARD callback rejected reason={}", e.getMessage());
-            callbacks.record(PROVIDER, "onboard", event, null, merchantCode(body), null, "REJECTED", e.getMessage());
+            log.info("PAYSPRINT_CALLBACK rejected event={} reason={}", event, e.getMessage());
+            callbacks.record(PROVIDER, "callback", event, null, merchantCode(body), null, "REJECTED", e.getMessage());
             return failed();
         }
     }
@@ -95,7 +124,7 @@ public class PaysprintOnboardCallbackController {
         try {
             claims = ekyc.redirectClaims(data);
         } catch (PaysprintCallbackRejected | JwtException | IllegalArgumentException e) {
-            log.info("PAYSPRINT_ONBOARD redirect rejected reason={}", e.getMessage());
+            log.info("PAYSPRINT_CALLBACK redirect rejected reason={}", e.getMessage());
             callbacks.record(PROVIDER, "redirect", null, null, null, null, "REJECTED", e.getMessage());
             return html(HttpStatus.BAD_REQUEST, "This eKYC result could not be confirmed.");
         }
@@ -108,10 +137,58 @@ public class PaysprintOnboardCallbackController {
             }
             return html(HttpStatus.OK, "eKYC is not finished yet. Close this page and open the link again.");
         } catch (PaysprintCallbackRejected | JwtException | IllegalArgumentException e) {
-            log.info("PAYSPRINT_ONBOARD redirect rejected reason={}", e.getMessage());
+            log.info("PAYSPRINT_CALLBACK redirect rejected reason={}", e.getMessage());
             callbacks.record(PROVIDER, "redirect", text(claims, "event"), statusOf(null, claims),
                     first(claims, "merchantcode", "merchant_id"), claims, "REJECTED", e.getMessage());
             return html(HttpStatus.BAD_REQUEST, "This eKYC result could not be confirmed.");
+        }
+    }
+
+    private ResponseEntity<Map<String, Object>> cashout(JsonNode body, String event) {
+        JsonNode data = body.path("param").path("data");
+        String txnStatus = UpiCashoutCallbackService.txnStatus(data);
+        String merchant = merchantCode(body);
+        String refid = data.path("refid").asText("");
+        String responseCode = body.path("param").path("response_code").asText("");
+        log.info("UPI_CASHOUT in event={} merchantcode={} response_code={} txn_status={} refid={} amount={} mobile={} message={}",
+                event, merchant, responseCode, txnStatus, refid,
+                data.path("amount").asText(""),
+                data.path("mobile").asText(""),
+                clip(body.path("param").path("message").asText("")));
+        JsonNode claims;
+        try {
+            claims = cashout.verifiedClaims(body);
+        } catch (JwtException | IllegalArgumentException e) {
+            log.info("UPI_CASHOUT out event={} outcome=REJECTED http=400 merchantcode={} txn_status={} refid={} reason={}",
+                    event, merchant, txnStatus, refid, e.getMessage());
+            callbacks.record(PROVIDER, CASHOUT_SOURCE, event, txnStatus, merchant, null, "REJECTED", e.getMessage());
+            return failed();
+        }
+        JsonNode stored = document(event, body, claims);
+        boolean initiate = body.path("param").path("response_code").asInt(-1) == 0 && "2".equals(txnStatus);
+        try {
+            if (initiate) {
+                long minted = cashout.initiate(data);
+                callbacks.record(PROVIDER, CASHOUT_SOURCE, event, txnStatus, merchant, stored, "APPLIED", null);
+                log.info("UPI_CASHOUT out event={} outcome=APPLIED http=200 merchantcode={} txn_status={} refid={}",
+                        event, merchant, txnStatus, minted);
+                return ResponseEntity.ok(Map.of(
+                        "status", 200, "refid", minted, "message", "Transaction completed successfully"));
+            }
+            boolean applied = cashout.acknowledge(data);
+            String outcome = applied ? "APPLIED" : "IGNORED";
+            callbacks.record(PROVIDER, CASHOUT_SOURCE, event, txnStatus, merchant, stored, outcome, null);
+            log.info("UPI_CASHOUT out event={} outcome={} http=200 merchantcode={} txn_status={} refid={} ackno={} rrn={} errcode={}",
+                    event, outcome, merchant, txnStatus, refid,
+                    data.path("ackno").asText(""),
+                    first(data, "original_bank_rrn", "rrn"),
+                    data.path("errcode").asText(""));
+            return completed();
+        } catch (UpiCashoutCallbackService.Rejected | ApiException e) {
+            log.info("UPI_CASHOUT out event={} outcome=REJECTED http=400 merchantcode={} txn_status={} refid={} reason={}",
+                    event, merchant, txnStatus, refid, e.getMessage());
+            callbacks.record(PROVIDER, CASHOUT_SOURCE, event, txnStatus, merchant, stored, "REJECTED", e.getMessage());
+            return failed();
         }
     }
 
@@ -132,6 +209,10 @@ public class PaysprintOnboardCallbackController {
         String fromParam = body == null ? "" : first(body.path("param"), "status", "txn_status", "ex_status");
         if (!fromParam.isBlank()) {
             return fromParam;
+        }
+        String fromData = body == null ? "" : body.path("param").path("data").path("txn_status").asText("").trim();
+        if (!fromData.isBlank()) {
+            return fromData;
         }
         return first(claims, "status", "txn_status", "ex_status");
     }
@@ -157,7 +238,19 @@ public class PaysprintOnboardCallbackController {
         return value.isBlank() ? null : value;
     }
 
+    private static String clip(String value) {
+        if (value == null) {
+            return "";
+        }
+        String trimmed = value.trim();
+        return trimmed.length() <= 160 ? trimmed : trimmed.substring(0, 160);
+    }
+
     private static String merchantCode(JsonNode body) {
+        String code = UpiCashoutCallbackService.merchantCode(body.path("param"));
+        if (!code.isBlank()) {
+            return code;
+        }
         return body.path("param").path("merchantcode").asText(
                 body.path("param").path("merchant_id").asText(""));
     }
