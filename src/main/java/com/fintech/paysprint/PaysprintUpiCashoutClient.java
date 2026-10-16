@@ -4,7 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fintech.platform.web.ApiException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,14 +48,40 @@ public class PaysprintUpiCashoutClient {
         body.put("redirect_url", redirectUrl);
         log.info("UPI_CASHOUT token request merchantcode={}", merchantCode);
         JsonNode root = post(TOKEN_PATH, body);
-        String url = root.path("url").asText("").trim();
-        log.info("UPI_CASHOUT token response merchantcode={} response_code={} message={} url_present={}",
-                merchantCode, root.path("response_code").asText(""), root.path("message").asText(""), !url.isBlank());
+        String returned = root.path("url").asText("").trim();
+        String token = root.path("token").asText("").trim();
+        boolean built = false;
+        String url = returned;
+        if (url.isBlank() && token.startsWith("http")) {
+            url = token;
+        }
+        // Live PaySprint returns the token and omits url. The hosted page reads ?encdata=.
+        if (url.isBlank() && !token.isBlank() && root.path("status").asBoolean(false)) {
+            url = hostedUrl(token);
+            built = true;
+        }
+        log.info("UPI_CASHOUT token response merchantcode={} response_code={} message={} url_present={} url_built={}",
+                merchantCode, root.path("response_code").asText(""), root.path("message").asText(""),
+                !returned.isBlank(), built);
         if (!root.path("status").asBoolean(false) || url.isBlank()) {
-            throw ApiException.of(HttpStatus.BAD_GATEWAY, "PAYSPRINT_CASHOUT_ERROR",
-                    PaysprintMessages.fromNode(root, "Paysprint did not return a cash-out link"));
+            String message = root.path("status").asBoolean(false)
+                    ? "Paysprint did not return a cash-out link"
+                    : PaysprintMessages.fromNode(root, "Paysprint did not return a cash-out link");
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "PAYSPRINT_CASHOUT_ERROR", message);
         }
         return url;
+    }
+
+    /**
+     * SIT hosts the page at /upi-cashout/. Live hosts it at /cashout/ on the API origin.
+     * Both pages take the token as the encdata query value.
+     */
+    private String hostedUrl(String token) {
+        String base = props.baseUrl() == null ? "" : props.baseUrl();
+        String page = base.contains("sit.paysprint.in")
+                ? "https://sit.paysprint.in/upi-cashout/"
+                : "https://api.paysprint.in/cashout/";
+        return page + "?encdata=" + URLEncoder.encode(token, StandardCharsets.UTF_8);
     }
 
     public JsonNode txnStatus(String merchantCode, String refid) {
@@ -78,7 +107,7 @@ public class PaysprintUpiCashoutClient {
         // The JDK client sends an unsized body as chunked transfer. PaySprint then
         // sees an empty request and answers that every field is required.
         byte[] json = jsonBytes(body);
-        log.info("PAYSPRINT_API request POST {} bytes={}", url, json.length);
+        log.info("PAYSPRINT_API request POST {} bytes={} body={}", url, json.length, logRequest(body));
         String raw;
         try {
             raw = restClient.post()
@@ -116,6 +145,21 @@ public class PaysprintUpiCashoutClient {
             throw ApiException.of(HttpStatus.BAD_GATEWAY, "PAYSPRINT_CASHOUT_ERROR",
                     "Could not prepare the Paysprint request");
         }
+    }
+
+    /** Headers stay out of the log. A token or hosted link in the body is recorded only as present. */
+    private static String logRequest(Map<String, String> body) {
+        Map<String, Object> safe = new LinkedHashMap<>();
+        body.forEach((key, value) -> {
+            String name = key.toLowerCase(Locale.ROOT);
+            if (name.equals("token") || name.equals("url") || name.equals("encdata")
+                    || name.equals("aadhaar") || name.equals("piddata")) {
+                safe.put(key + "_present", value != null && !value.isBlank());
+            } else {
+                safe.put(key, value);
+            }
+        });
+        return safe.toString();
     }
 
     /** The token and hosted URL are credentials. Log that they arrived, not their values. */
