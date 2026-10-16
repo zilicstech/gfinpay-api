@@ -2,7 +2,6 @@ package com.fintech.paysprint;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fintech.platform.web.ApiException;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -96,11 +95,11 @@ public class PaysprintUpiCashoutClient {
                     .body(json)
                     .retrieve()
                     .body(String.class);
-            log.info("PAYSPRINT_API response POST {} status=200 body={}", url, logBody(raw));
+            log.info("PAYSPRINT_API response POST {} status=200 body={}", url, raw == null ? "" : raw);
         } catch (RestClientResponseException e) {
             String responseBody = e.getResponseBodyAsString();
             log.info("PAYSPRINT_API response POST {} status={} body={}", url, e.getStatusCode().value(),
-                    logBody(responseBody));
+                    responseBody == null ? "" : responseBody);
             throw ApiException.of(HttpStatus.BAD_GATEWAY, "PAYSPRINT_CASHOUT_ERROR",
                     PaysprintMessages.fromBody(mapper, responseBody,
                             "Paysprint rejected the cash-out request (" + e.getStatusCode().value() + ")"));
@@ -135,34 +134,5 @@ public class PaysprintUpiCashoutClient {
             }
         });
         return safe.toString();
-    }
-
-    /** The token and hosted URL are credentials. Log that they arrived, not their values. */
-    private String logBody(String raw) {
-        if (raw == null || raw.isBlank()) {
-            return "";
-        }
-        String trimmed = raw.stripLeading();
-        if (trimmed.startsWith("<")) {
-            return "html status page";
-        }
-        try {
-            JsonNode root = mapper.readTree(raw);
-            if (root instanceof ObjectNode object && (object.has("token") || object.has("url"))) {
-                ObjectNode safe = object.deepCopy();
-                if (safe.has("token")) {
-                    safe.put("token_present", !safe.path("token").asText("").isBlank());
-                    safe.remove("token");
-                }
-                if (safe.has("url")) {
-                    safe.put("url_present", !safe.path("url").asText("").isBlank());
-                    safe.remove("url");
-                }
-                return safe.toString();
-            }
-        } catch (Exception ignored) {
-            return "unparsed";
-        }
-        return raw;
     }
 }
