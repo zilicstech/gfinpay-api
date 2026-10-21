@@ -67,6 +67,7 @@ public class MerchantActivationService {
         out.put("message", text(gate.get("message"), ""));
         out.put("allowPastedPid", props.allowPastedPid());
         out.put("rdEnv", props.rdEnvOrLive());
+        out.put("dmtActive", dmtActive(me.userId()));
         out.put("banks", banks(me.userId()));
         return out;
     }
@@ -87,7 +88,7 @@ public class MerchantActivationService {
     }
 
     public Map<String, Object> activate(AuthPrincipal me, String pipe, String aadhaar, String dob, String pidData,
-                                        String latitude, String longitude) {
+                                        String latitude, String longitude, boolean activateDmt) {
         requireRetailer(me);
         String bank = pipe(pipe);
         Map<String, Object> profile = profile(me.userId());
@@ -116,12 +117,12 @@ public class MerchantActivationService {
         if (code.isBlank()) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "RETAILER_CODE_MISSING", "This retailer has no GFIN code.");
         }
-        log.info("MERCHANT_EKYC activate start pipe={} retailer={} pid_length={} has_location={}",
-                bank, code, pid.length(), !blank(latitude) && !blank(longitude));
+        log.info("MERCHANT_EKYC activate start pipe={} retailer={} is_casa={} pid_length={} has_location={}",
+                bank, code, activateDmt ? "1" : "0", pid.length(), !blank(latitude) && !blank(longitude));
         String encrypted = cipher.encrypt(pid);
         log.info("MERCHANT_EKYC pid encrypted pipe={} in_length={} out_length={}", bank, pid.length(), encrypted.length());
-        JsonNode root = client.activateMerchant(code, digits, encrypted, dob.trim(), bank, props.isCasaOrOff(),
-                "SITE", latitude, longitude);
+        JsonNode root = client.activateMerchant(code, digits, encrypted, dob.trim(), bank,
+                activateDmt ? "1" : "0", "SITE", latitude, longitude);
         String responseCode = root.path("response_code").asText("");
         MerchantActivationOutcome outcome = MerchantActivationOutcome.from(responseCode);
         String message = root.path("message").asText("");
@@ -130,7 +131,7 @@ public class MerchantActivationService {
         } else if (!"1".equals(responseCode) && !"3".equals(responseCode)) {
             message = outcome.message();
         }
-        record(me.userId(), bank, code, digits, responseCode, outcome.status(), message);
+        record(me.userId(), bank, code, digits, responseCode, outcome.status(), message, activateDmt);
         if (outcome.activated()) {
             jdbc.update("""
                     UPDATE agent_kyc_profiles
@@ -156,6 +157,7 @@ public class MerchantActivationService {
         out.put("message", "1".equals(responseCode) ? outcome.message() : message);
         out.put("responseCode", responseCode);
         out.put("bankStatus", bankStatus);
+        out.put("dmtActive", dmtActive(me.userId()));
         return out;
     }
 
@@ -174,11 +176,12 @@ public class MerchantActivationService {
     }
 
     public void record(java.util.UUID userId, String bank, String code, String aadhaar, String responseCode,
-                       String status, String message) {
+                       String status, String message, boolean activateDmt) {
+        boolean dmtOn = "SUCCESS".equals(status) && activateDmt;
         jdbc.update("""
                 INSERT INTO paysprint_bank_ekyc
-                    (user_id, bank_name, status, completed_at, last_response_code, last_message, attempts, last_attempt_at)
-                VALUES (?, ?, ?, CASE WHEN ? = 'SUCCESS' THEN now() ELSE NULL END, ?, ?, 1, now())
+                    (user_id, bank_name, status, completed_at, last_response_code, last_message, attempts, last_attempt_at, is_dmt_active)
+                VALUES (?, ?, ?, CASE WHEN ? = 'SUCCESS' THEN now() ELSE NULL END, ?, ?, 1, now(), ?)
                 ON CONFLICT (user_id, bank_name) DO UPDATE
                    SET status = EXCLUDED.status,
                        completed_at = CASE WHEN EXCLUDED.status = 'SUCCESS' THEN now() ELSE paysprint_bank_ekyc.completed_at END,
@@ -186,10 +189,19 @@ public class MerchantActivationService {
                        last_message = EXCLUDED.last_message,
                        attempts = paysprint_bank_ekyc.attempts + 1,
                        last_attempt_at = now(),
+                       is_dmt_active = paysprint_bank_ekyc.is_dmt_active OR EXCLUDED.is_dmt_active,
                        updated_at = now()
-                """, userId, bank, status, status, responseCode, clip(message));
+                """, userId, bank, status, status, responseCode, clip(message), dmtOn);
         log.info("MERCHANT_EKYC stored pipe={} merchantcode={} aadhaar_last4={} response_code={}",
                 bank, code, aadhaar.substring(aadhaar.length() - 4), responseCode);
+    }
+
+    private boolean dmtActive(java.util.UUID userId) {
+        Integer n = jdbc.queryForObject("""
+                SELECT count(*)::int FROM paysprint_bank_ekyc
+                 WHERE user_id = ? AND is_dmt_active
+                """, Integer.class, userId);
+        return n != null && n > 0;
     }
 
     private String refreshBankStatus(java.util.UUID userId) {
@@ -221,7 +233,7 @@ public class MerchantActivationService {
 
     private List<Map<String, Object>> banks(java.util.UUID userId) {
         List<Map<String, Object>> rows = jdbc.queryForList("""
-                SELECT bank_name, status, last_message, completed_at
+                SELECT bank_name, status, last_message, completed_at, is_dmt_active
                   FROM paysprint_bank_ekyc WHERE user_id = ?
                 """, userId);
         Map<String, Map<String, Object>> byName = new LinkedHashMap<>();
@@ -240,6 +252,7 @@ public class MerchantActivationService {
             item.put("wadh", props.wadhFor(bank));
             item.put("status", stored == null ? "PENDING" : text(stored.get("status"), "PENDING"));
             item.put("message", stored == null ? "" : text(stored.get("last_message"), ""));
+            item.put("dmtActive", stored != null && Boolean.TRUE.equals(stored.get("is_dmt_active")));
             out.add(item);
         }
         return out;

@@ -4,6 +4,7 @@ import com.fintech.fdcards.FdProviderGate;
 import com.fintech.platform.web.ApiException;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -16,6 +17,8 @@ public class PlatformServiceGate {
     public static final String UPI_CASHOUT = "UPI_CASHOUT";
     public static final String BBPS = "BBPS";
     public static final String LEAD_GEN = "LEAD_GEN";
+    public static final Set<String> LEAD_CATEGORIES = Set.of(
+            "CREDIT_CARD", "INSTANT_LOAN", "PERSONAL_LOAN", "BUSINESS_LOAN", "SAVINGS");
 
     private final JdbcTemplate jdbc;
     private final FdProviderGate fdProviders;
@@ -40,8 +43,12 @@ public class PlatformServiceGate {
         }
     }
 
+    public boolean anyLeadEnabled() {
+        return LEAD_CATEGORIES.stream().anyMatch(this::isEnabled);
+    }
+
     public void requireLeadSalesEnabled() {
-        if (!fdProviders.isModuleEnabled() && !isEnabled(LEAD_GEN)) {
+        if (!fdProviders.isModuleEnabled() && !anyLeadEnabled()) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "SERVICE_DISABLED",
                     "Customer sales are switched off by the platform");
         }
@@ -50,16 +57,16 @@ public class PlatformServiceGate {
     public void requireCatalogCategory(String categoryCode) {
         if ("FD_CARD".equalsIgnoreCase(categoryCode)) {
             fdProviders.requireModule();
-        } else {
-            requireEnabled(LEAD_GEN);
+            return;
         }
+        requireEnabled(categoryCode == null ? "" : categoryCode.trim().toUpperCase());
     }
 
     public boolean isCatalogCategoryAvailable(String categoryCode) {
         if ("FD_CARD".equalsIgnoreCase(categoryCode)) {
             return fdProviders.isModuleEnabled();
         }
-        return isEnabled(LEAD_GEN);
+        return isEnabled(categoryCode == null ? "" : categoryCode.trim().toUpperCase());
     }
 
     public List<Map<String, Object>> listEnabled() {

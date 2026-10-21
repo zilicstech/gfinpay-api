@@ -112,12 +112,12 @@ public class DeskService {
             out.put("walletFloat", decimal("""
                     SELECT COALESCE(sum(w.available_balance + w.hold_balance),0)
                       FROM wallets w JOIN users u ON u.id = w.user_id
-                     WHERE u.parent_id = ?
+                     WHERE u.parent_id = ? AND w.wallet_kind = 'MAIN'
                     """, new Object[]{me.userId()}));
             out.put("walletAvailable", decimal("""
                     SELECT COALESCE(sum(w.available_balance),0)
                       FROM wallets w JOIN users u ON u.id = w.user_id
-                     WHERE u.parent_id = ?
+                     WHERE u.parent_id = ? AND w.wallet_kind = 'MAIN'
                     """, new Object[]{me.userId()}));
             out.put("topRetailers", jdbc.queryForList("""
                     SELECT u.id, u.full_name, k.shop_name,
@@ -147,7 +147,7 @@ public class DeskService {
                            END AS reason
                       FROM users u
                       LEFT JOIN agent_kyc_profiles k ON k.user_id = u.id
-                      LEFT JOIN wallets w ON w.user_id = u.id
+                      LEFT JOIN wallets w ON w.user_id = u.id AND w.wallet_kind = 'MAIN'
                      WHERE u.parent_id = ? AND u.user_type = 'RETAILER'
                        AND (u.status <> 'ACTIVE'
                             OR COALESCE(k.kyc_status, 'COMPLETED') <> 'COMPLETED'
@@ -159,7 +159,7 @@ public class DeskService {
             try {
                 Map<String, Object> wallet = jdbc.queryForMap("""
                         SELECT available_balance, hold_balance, status
-                          FROM wallets WHERE user_id = ?
+                          FROM wallets WHERE user_id = ? AND wallet_kind = 'MAIN'
                         """, me.userId());
                 BigDecimal available = toMoney(wallet.get("available_balance"));
                 BigDecimal hold = toMoney(wallet.get("hold_balance"));
@@ -266,7 +266,7 @@ public class DeskService {
                   LEFT JOIN users c ON c.id = u.created_by
                   LEFT JOIN hubs h ON h.id = u.hub_id
                   LEFT JOIN agent_kyc_profiles k ON k.user_id = u.id
-                  LEFT JOIN wallets w ON w.user_id = u.id
+                  LEFT JOIN wallets w ON w.user_id = u.id AND w.wallet_kind = 'MAIN'
                  WHERE u.parent_id = ? AND u.user_type = 'RETAILER'
                  ORDER BY u.full_name
                 """, me.userId());

@@ -59,7 +59,7 @@ public class ProductEligibilityService {
 
         boolean fdCard = "FD_CARD".equals(code);
         List<Map<String, Object>> items = jdbc.queryForList("""
-                SELECT id, code, name, product_key, provider, min_budget
+                SELECT id, code, name, product_key, provider, rail, min_budget
                   FROM catalog_items
                  WHERE category_code = ?
                    AND (? OR active = TRUE)
@@ -92,7 +92,8 @@ public class ProductEligibilityService {
         int alreadySold = 0;
         for (Map<String, Object> item : items) {
             BigDecimal minimum = item.get("min_budget") == null ? BigDecimal.ZERO : (BigDecimal) item.get("min_budget");
-            if (budget.compareTo(minimum) < 0) {
+            boolean paysprintLead = "PAYSPRINT_LEAD".equals(String.valueOf(item.get("rail")));
+            if (!paysprintLead && budget.compareTo(minimum) < 0) {
                 belowBudget++;
                 continue;
             }

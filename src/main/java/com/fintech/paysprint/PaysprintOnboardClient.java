@@ -81,15 +81,15 @@ public class PaysprintOnboardClient {
         body.put("aadhaar", aadhaar);
         body.put("piddata", encryptedPid);
         body.put("dob", dob);
-        body.put("is_casa", isCasa);
+        body.put("is_casa", "1".equals(isCasa) ? "1" : "0");
         body.put("pipe", pipe);
         if ("bank6".equals(pipe)) {
             body.put("accessmode", accessMode);
             body.put("latitude", latitude);
             body.put("longitude", longitude);
         }
-        log.info("MERCHANT_EKYC paysprint request pipe={} merchantcode={} pid_length={}",
-                pipe, merchantCode, encryptedPid == null ? 0 : encryptedPid.length());
+        log.info("MERCHANT_EKYC paysprint request pipe={} merchantcode={} is_casa={} pid_length={}",
+                pipe, merchantCode, body.get("is_casa"), encryptedPid == null ? 0 : encryptedPid.length());
         return post(activatePath(), body, false);
     }
 

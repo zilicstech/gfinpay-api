@@ -1,12 +1,17 @@
 package com.fintech.sales;
 
+import com.fintech.commission.CommissionEngine;
 import com.fintech.fdcards.FdConversionCommission;
 import com.fintech.fdcards.FdJourneyResult;
 import com.fintech.fdcards.FdLinkRouter;
 import com.fintech.fdcards.FdProviderGate;
 import com.fintech.identity.AdminAccess;
+import com.fintech.ledger.TransactionService;
+import com.fintech.ledger.WalletService;
 import com.fintech.paysprint.PaysprintFdClient;
 import com.fintech.paysprint.PaysprintLeadClient;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import com.fintech.paysprint.PaysprintUtmOutcome;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fintech.platform.PlatformServiceGate;
@@ -75,6 +80,9 @@ public class SalesLeadService {
     private final FdLinkRouter fdLinkRouter;
     private final FdProviderGate fdProviders;
     private final FdConversionCommission fdCommission;
+    private final CommissionEngine commissionEngine;
+    private final WalletService walletService;
+    private final TransactionService transactionService;
     private final SaleNetworkSnapshot snapshot;
     private final AdminAccess access;
     private final CustomerService customers;
@@ -88,6 +96,9 @@ public class SalesLeadService {
                             FdLinkRouter fdLinkRouter,
                             FdProviderGate fdProviders,
                             FdConversionCommission fdCommission,
+                            CommissionEngine commissionEngine,
+                            WalletService walletService,
+                            TransactionService transactionService,
                             SaleNetworkSnapshot snapshot,
                             AdminAccess access,
                             CustomerService customers,
@@ -100,6 +111,9 @@ public class SalesLeadService {
         this.fdLinkRouter = fdLinkRouter;
         this.fdProviders = fdProviders;
         this.fdCommission = fdCommission;
+        this.commissionEngine = commissionEngine;
+        this.walletService = walletService;
+        this.transactionService = transactionService;
         this.snapshot = snapshot;
         this.access = access;
         this.customers = customers;
@@ -119,18 +133,9 @@ public class SalesLeadService {
             args.add(retailerUserId);
         }
         sql.append(" ORDER BY l.created_at DESC LIMIT 300 ");
-        boolean leadGen = services.isEnabled(com.fintech.platform.PlatformServiceGate.LEAD_GEN);
-        boolean fdModule = fdProviders.directory().moduleEnabled();
         return jdbc.queryForList(sql.toString(), args.toArray()).stream()
-                .filter(row -> categoryAvailable(String.valueOf(row.get("category_code")), leadGen, fdModule))
+                .filter(row -> services.isCatalogCategoryAvailable(String.valueOf(row.get("category_code"))))
                 .toList();
-    }
-
-    private static boolean categoryAvailable(String categoryCode, boolean leadGen, boolean fdModule) {
-        if ("FD_CARD".equalsIgnoreCase(categoryCode)) {
-            return fdModule;
-        }
-        return leadGen;
     }
 
     public Map<String, Object> get(AuthPrincipal me, UUID id) {
@@ -252,6 +257,15 @@ public class SalesLeadService {
                     redirect);
             url = journey.url();
             encdata = journey.encdata();
+            if (url == null || url.isBlank()) {
+                throw ApiException.of(HttpStatus.BAD_GATEWAY, "PAYSPRINT_LEAD_ERROR",
+                        "PaySprint did not return a journey URL");
+            }
+            if (encdata != null && !encdata.isBlank() && !url.contains("encdata=")) {
+                url = url + (url.contains("?") ? "&" : "?") + "encdata="
+                        + URLEncoder.encode(encdata, StandardCharsets.UTF_8);
+            }
+            method = "GET";
         }
         jdbc.update("""
                 UPDATE sales_leads
@@ -272,12 +286,12 @@ public class SalesLeadService {
             throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
         }
         Map<String, Object> lead = get(me, id);
-        if (!isPaysprintFd(lead)) {
-            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "NOT_PAYSPRINT_FD",
-                    "Status check is only for PaySprint FD cards");
+        if (!isPaysprintFd(lead) && !isPaysprintLead(lead)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "NOT_PAYSPRINT_LEAD",
+                    "Status check is only for PaySprint sales");
         }
         String refid = String.valueOf(lead.get("provider_refid"));
-        JsonNode data = fdClient.statusCheck(refid);
+        JsonNode data = isPaysprintFd(lead) ? fdClient.statusCheck(refid) : leadClient.status(refid);
         String note = PaysprintUtmOutcome.summary(data);
         if (PaysprintUtmOutcome.converted(data)) {
             applyOutcome(refid, true, "STATUS_CHECK: " + note);
@@ -324,17 +338,42 @@ public class SalesLeadService {
                 """, next, next, message, refid);
         if (converted && !leads.isEmpty()) {
             Map<String, Object> lead = leads.get(0);
-            if ("INTERNAL".equals(String.valueOf(lead.get("sale_channel")))
-                    && "FD_CARD".equals(String.valueOf(lead.get("sale_type")))) {
+            if (!"INTERNAL".equals(String.valueOf(lead.get("sale_channel")))) {
+                return;
+            }
+            String type = String.valueOf(lead.get("sale_type"));
+            if ("FD_CARD".equals(type)) {
                 fdCommission.payOnConversion(lead);
+            } else if (PlatformServiceGate.LEAD_CATEGORIES.contains(type)) {
+                payLeadReward(lead, type);
             }
         }
+    }
+
+    private void payLeadReward(Map<String, Object> lead, String txnType) {
+        UUID retailerId = (UUID) lead.get("retailer_user_id");
+        BigDecimal amount = lead.get("budget") instanceof BigDecimal budget && budget.signum() > 0
+                ? budget : BigDecimal.ONE;
+        CommissionEngine.Resolution res = commissionEngine.resolve(retailerId, txnType, amount);
+        if (res.ruleId() == null
+                || res.retailerShare().add(res.distributorShare()).add(res.hubShare()).signum() <= 0) {
+            return;
+        }
+        WalletService.WalletInfo wallet = walletService.lockByUser(retailerId);
+        UUID txnId = transactionService.create(txnType, retailerId, wallet.walletId(), amount, BigDecimal.ZERO,
+                null, null, "PAYSPRINT", null);
+        transactionService.transition(txnId, "SUCCESS", String.valueOf(lead.get("id")), null);
+        commissionEngine.creditRewards(txnId, retailerId, txnType, amount);
     }
 
     private static boolean isPaysprintFd(Map<String, Object> lead) {
         return "FD_CARD".equals(String.valueOf(lead.get("category_code")))
                 && ("PAYSPRINT".equals(String.valueOf(lead.get("provider")))
                 || "PAYSPRINT_FD".equals(String.valueOf(lead.get("rail"))));
+    }
+
+    private static boolean isPaysprintLead(Map<String, Object> lead) {
+        return "PAYSPRINT_LEAD".equals(String.valueOf(lead.get("rail")));
     }
 
     private static Map<String, Object> mapperToMap(JsonNode data) {

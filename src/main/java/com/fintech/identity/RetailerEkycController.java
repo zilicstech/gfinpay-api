@@ -25,7 +25,8 @@ public class RetailerEkycController {
             @NotBlank String dob,
             @NotBlank String pidData,
             String latitude,
-            String longitude) {}
+            String longitude,
+            Boolean activateDmt) {}
 
     public record DeviceEventRequest(
             @NotBlank String stage,
@@ -65,8 +66,9 @@ public class RetailerEkycController {
     public ApiResponse<Map<String, Object>> activate(@AuthenticationPrincipal AuthPrincipal me,
                                                      @PathVariable String pipe,
                                                      @Valid @RequestBody ActivateRequest body) {
+        boolean activateDmt = body.activateDmt() == null || body.activateDmt();
         return ApiResponse.ok(activation.activate(me, pipe, body.aadhaar(), body.dob(), body.pidData(),
-                body.latitude(), body.longitude()));
+                body.latitude(), body.longitude(), activateDmt));
     }
 
     @PostMapping("/device-event")

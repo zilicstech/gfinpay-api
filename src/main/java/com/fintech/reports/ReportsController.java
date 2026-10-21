@@ -86,7 +86,7 @@ public class ReportsController {
                 "SELECT COALESCE(sum(fee),0) FROM transactions WHERE state='SUCCESS'",
                 BigDecimal.class));
         out.put("walletFloat", jdbc.queryForObject(
-                "SELECT COALESCE(sum(available_balance + hold_balance),0) FROM wallets", BigDecimal.class));
+                "SELECT COALESCE(sum(available_balance + hold_balance),0) FROM wallets WHERE wallet_kind = 'MAIN'", BigDecimal.class));
         out.put("transactionsByState", jdbc.queryForList("""
                 SELECT txn_type::text AS txn_type, state::text AS state, count(*) AS count, COALESCE(sum(amount),0) AS amount
                   FROM transactions GROUP BY txn_type, state ORDER BY txn_type, state

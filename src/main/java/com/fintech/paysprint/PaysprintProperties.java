@@ -43,8 +43,4 @@ public record PaysprintProperties(
     public String rdEnvOrLive() {
         return rdEnv == null || rdEnv.isBlank() ? "P" : rdEnv;
     }
-
-    public String isCasaOrOff() {
-        return isCasa == null || isCasa.isBlank() ? "0" : isCasa;
-    }
 }

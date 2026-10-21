@@ -2,6 +2,7 @@ package com.fintech.sales;
 
 import com.fintech.fdcards.FdProviderGate;
 import com.fintech.persistence.config.CatalogItemRepository;
+import com.fintech.platform.PlatformServiceGate;
 import com.fintech.platform.web.ApiException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -18,11 +19,14 @@ public class CatalogService {
 
     private final JdbcTemplate jdbc;
     private final FdProviderGate fdProviders;
+    private final PlatformServiceGate services;
     private final CatalogItemRepository items;
 
-    public CatalogService(JdbcTemplate jdbc, FdProviderGate fdProviders, CatalogItemRepository items) {
+    public CatalogService(JdbcTemplate jdbc, FdProviderGate fdProviders, PlatformServiceGate services,
+                          CatalogItemRepository items) {
         this.jdbc = jdbc;
         this.fdProviders = fdProviders;
+        this.services = services;
         this.items = items;
     }
 
@@ -48,6 +52,9 @@ public class CatalogService {
                     .filter(item -> code.equals(String.valueOf(item.get("category_code"))))
                     .filter(item -> fdItemVisible(code, String.valueOf(item.get("provider")), providers))
                     .toList());
+            if (!includeInactive && !services.isCatalogCategoryAvailable(code)) {
+                continue;
+            }
             if (!includeInactive && ((List<?>) row.get("items")).isEmpty()) {
                 continue;
             }

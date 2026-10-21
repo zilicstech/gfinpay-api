@@ -66,39 +66,6 @@ public class ServiceSettlement {
     }
 
     private void postCommissions(UUID txnId, UUID agentId, String txnType, BigDecimal amount) {
-        CommissionEngine.Resolution res = commissionEngine.resolve(agentId, txnType, amount);
-        BigDecimal r = res.retailerShare();
-        BigDecimal d = res.distributorShare();
-        if (r.add(d).signum() <= 0 && res.platformShare().signum() <= 0) {
-            return;
-        }
-        WalletService.WalletInfo agentWallet = walletService.lockByUser(agentId);
-        UUID distributorId = jdbc.queryForObject("SELECT parent_id FROM users WHERE id = ?", UUID.class, agentId);
-        UUID postingGroup = UUID.randomUUID();
-        if (r.add(d).signum() > 0) {
-            if (r.signum() > 0) {
-                ledgerService.post(txnId, agentWallet.walletId(), "CREDIT", r, "Commission: retailer");
-                walletService.adjustCache(agentWallet.walletId(), r, BigDecimal.ZERO);
-            }
-            if (d.signum() > 0 && distributorId != null) {
-                WalletService.WalletInfo distWallet = walletService.lockByUser(distributorId);
-                ledgerService.post(txnId, distWallet.walletId(), "CREDIT", d, "Commission: distributor");
-                walletService.adjustCache(distWallet.walletId(), d, BigDecimal.ZERO);
-            }
-        }
-        UUID platformUser = jdbc.queryForObject(
-                "SELECT id FROM users WHERE user_type = 'SUPER_ADMIN' LIMIT 1", UUID.class);
-        CommissionEngine.EarningNetwork network = commissionEngine.networkForRetailer(agentId);
-        if (r.signum() > 0) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), agentId, "RETAILER", r, postingGroup, network);
-        }
-        if (d.signum() > 0 && distributorId != null) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), distributorId, "DISTRIBUTOR", d, postingGroup, network);
-        }
-        if (res.platformShare().signum() > 0) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), platformUser, "PLATFORM", res.platformShare(), postingGroup, network);
-        }
-        log.info("COMMISSION_SPLIT type={} txnId={} retailer={} distributor={} platform={}",
-                txnType, txnId, r, d, res.platformShare());
+        commissionEngine.creditRewards(txnId, agentId, txnType, amount);
     }
 }

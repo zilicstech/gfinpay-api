@@ -167,18 +167,19 @@ public class FinanceService {
     @Transactional
     public Map<String, Object> submitEarningsWithdrawal(AuthPrincipal me, BigDecimal amount, String remarks,
                                                         UUID payoutAccountId) {
-        if (!"RETAILER".equals(me.userType())) {
-            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Only a retailer can request an earnings withdrawal");
+        if (!"RETAILER".equals(me.userType()) && !"MASTER_DISTRIBUTOR".equals(me.userType())) {
+            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Only a retailer or distributor can request a rewards withdrawal");
         }
         if (amount == null || amount.signum() <= 0) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_AMOUNT", "Amount must be positive");
         }
-        Map<String, Object> retailer = retailerRow(me.userId());
-        if (!"ACTIVE".equals(String.valueOf(retailer.get("status")))) {
-            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "RETAILER_NOT_ACTIVE",
-                    "Earnings can be withdrawn after the retailer is activated");
+        Map<String, Object> party = jdbc.queryForMap(
+                "SELECT status::text AS status FROM users WHERE id = ?", me.userId());
+        if (!"ACTIVE".equals(String.valueOf(party.get("status")))) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "USER_NOT_ACTIVE",
+                    "Rewards can be withdrawn after the account is active");
         }
-        WalletService.WalletInfo wallet = walletService.getByUser(me.userId());
+        WalletService.WalletInfo wallet = walletService.getRewards(me.userId());
         if (wallet.available().compareTo(amount) < 0) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INSUFFICIENT_BALANCE",
                     "Available balance is less than the withdrawal");
@@ -318,7 +319,7 @@ public class FinanceService {
         SpacesStorage.StoredObject stored = spaces.upload("withdrawal_transfer", proof);
         UUID retailerId = (UUID) row.get("retailer_user_id");
         BigDecimal amount = (BigDecimal) row.get("amount");
-        UUID txnId = debitWallet(retailerId, amount, "Earnings withdrawal UTR " + ref);
+        UUID txnId = debitRewards(retailerId, amount, "Rewards withdrawal UTR " + ref);
         jdbc.update("""
                 UPDATE finance_requests
                    SET utr = ?, proof_key = ?, proof_filename = ?, proof_content_type = ?,
@@ -382,7 +383,7 @@ public class FinanceService {
                   FROM users u
                   LEFT JOIN users p ON p.id = u.parent_id
                   LEFT JOIN hubs h ON h.id = u.hub_id
-                  LEFT JOIN wallets w ON w.user_id = u.id
+                  LEFT JOIN wallets w ON w.user_id = u.id AND w.wallet_kind = 'MAIN'
                  WHERE u.user_type = 'RETAILER'
                  ORDER BY u.full_name
                  LIMIT ? OFFSET ?
@@ -467,6 +468,20 @@ public class FinanceService {
         return txnId;
     }
 
+    private UUID debitRewards(UUID userId, BigDecimal amount, String note) {
+        WalletService.WalletInfo wallet = walletService.lockRewards(userId);
+        if (wallet.available().compareTo(amount) < 0) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INSUFFICIENT_BALANCE",
+                    "Rewards balance is less than the withdrawal");
+        }
+        UUID txnId = transactionService.create("EARNINGS_WITHDRAW", userId, wallet.walletId(), amount, BigDecimal.ZERO,
+                null, null, "REWARDS", null);
+        ledgerService.post(txnId, wallet.walletId(), "DEBIT", amount, note);
+        walletService.adjustCache(wallet.walletId(), amount.negate(), BigDecimal.ZERO);
+        transactionService.transition(txnId, "SUCCESS", null, null);
+        return txnId;
+    }
+
     private UUID resolveRetailer(AuthPrincipal me, String kind, UUID retailerId) {
         if ("RETAILER".equals(me.userType())) {
             if (retailerId != null && !retailerId.equals(me.userId())) {
@@ -503,14 +518,11 @@ public class FinanceService {
     }
 
     private void assertCanViewRetailer(AuthPrincipal me, UUID retailerId) {
-        if (me.auditor() || me.superAdminOrPlatformAdmin()) {
+        if (me.auditor() || me.superAdminOrPlatformAdmin() || me.userId().equals(retailerId)) {
             return;
         }
         if ("RETAILER".equals(me.userType())) {
-            if (!me.userId().equals(retailerId)) {
-                throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
-            }
-            return;
+            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
         }
         access.assertNetworkUser(retailerId);
     }
@@ -524,7 +536,8 @@ public class FinanceService {
             return;
         }
         if ("MASTER_DISTRIBUTOR".equals(me.userType())) {
-            sql.append(" AND r.parent_id = ? ");
+            sql.append(" AND (r.parent_id = ? OR f.retailer_user_id = ?) ");
+            args.add(me.userId());
             args.add(me.userId());
             return;
         }

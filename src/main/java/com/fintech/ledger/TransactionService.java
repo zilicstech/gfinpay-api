@@ -18,7 +18,7 @@ public class TransactionService {
 
     private static final Map<String, Set<String>> ALLOWED = Map.of(
             "INITIATED", Set.of("HOLD", "SUCCESS", "FAILED"),
-            "HOLD", Set.of("PENDING", "FAILED"),
+            "HOLD", Set.of("PENDING", "SUCCESS", "FAILED"),
             "PENDING", Set.of("SUCCESS", "FAILED"),
             "SUCCESS", Set.of("REVERSED"));
 

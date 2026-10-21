@@ -17,8 +17,11 @@ public class WalletEntity {
     @Id
     private UUID id;
 
-    @Column(name = "user_id", nullable = false, unique = true)
+    @Column(name = "user_id", nullable = false)
     private UUID userId;
+
+    @Column(name = "wallet_kind", nullable = false, columnDefinition = "text")
+    private String walletKind;
 
     @Column(name = "available_balance", nullable = false)
     private BigDecimal availableBalance;

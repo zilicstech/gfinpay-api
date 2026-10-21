@@ -46,6 +46,9 @@ public class AdminPlatformController {
 
     public record ServiceToggleRequest(@NotNull Boolean enabled) {}
 
+    public record CommissionRequest(@NotBlank String mode, @NotNull BigDecimal retailer,
+                                    @NotNull BigDecimal distributor, @NotNull BigDecimal hub) {}
+
     public record SettingUpdateRequest(@NotBlank String value) {}
 
     public record CreateDistributorRequest(
@@ -200,6 +203,19 @@ public class AdminPlatformController {
         return ApiResponse.ok(admin.setServiceEnabled(code, req.enabled()));
     }
 
+    @GetMapping("/services/{code}/commission")
+    @PreAuthorize("hasAuthority('settings.manage')")
+    public ApiResponse<Map<String, Object>> commission(@PathVariable String code) {
+        return ApiResponse.ok(admin.commission(code));
+    }
+
+    @PutMapping("/services/{code}/commission")
+    @PreAuthorize("hasAuthority('settings.manage')")
+    public ApiResponse<Map<String, Object>> saveCommission(@PathVariable String code,
+                                                           @Valid @RequestBody CommissionRequest req) {
+        return ApiResponse.ok(admin.saveCommission(code, req.mode(), req.retailer(), req.distributor(), req.hub()));
+    }
+
     @GetMapping("/users")
     @PreAuthorize("hasAuthority('users.onboard')")
     public ApiResponse<List<Map<String, Object>>> users(@RequestParam(required = false) String type,
@@ -296,6 +312,12 @@ public class AdminPlatformController {
     @PreAuthorize("hasAuthority('users.onboard')")
     public ApiResponse<Map<String, Object>> password(@PathVariable UUID id, @Valid @RequestBody PasswordRequest req) {
         return ApiResponse.ok(admin.resetPassword(id, req.password()));
+    }
+
+    @PostMapping("/users/{id}/ekyc/{bank}/redo")
+    @PreAuthorize("hasAuthority('users.onboard')")
+    public ApiResponse<Map<String, Object>> reopenBankEkyc(@PathVariable UUID id, @PathVariable String bank) {
+        return ApiResponse.ok(admin.reopenBankEkyc(id, bank));
     }
 
     @PatchMapping("/users/{id}/wallet/freeze")

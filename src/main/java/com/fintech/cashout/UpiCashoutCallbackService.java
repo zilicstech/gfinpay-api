@@ -286,37 +286,7 @@ public class UpiCashoutCallbackService {
     }
 
     private void postCommissions(UUID txnId, UUID agentId, BigDecimal amount, WalletService.WalletInfo agentWallet) {
-        CommissionEngine.Resolution res = commissionEngine.resolve(agentId, "CASHOUT_UPI", amount);
-        BigDecimal retailerShare = res.retailerShare();
-        BigDecimal distributorShare = res.distributorShare();
-        if (retailerShare.add(distributorShare).signum() <= 0 && res.platformShare().signum() <= 0) {
-            return;
-        }
-        UUID distributorId = jdbc.queryForObject("SELECT parent_id FROM users WHERE id = ?", UUID.class, agentId);
-        UUID postingGroup = UUID.randomUUID();
-        if (retailerShare.signum() > 0) {
-            ledgerService.post(txnId, agentWallet.walletId(), "CREDIT", retailerShare, "Commission: retailer");
-            walletService.adjustCache(agentWallet.walletId(), retailerShare, BigDecimal.ZERO);
-        }
-        if (distributorShare.signum() > 0 && distributorId != null) {
-            WalletService.WalletInfo distWallet = walletService.lockByUser(distributorId);
-            ledgerService.post(txnId, distWallet.walletId(), "CREDIT", distributorShare, "Commission: distributor");
-            walletService.adjustCache(distWallet.walletId(), distributorShare, BigDecimal.ZERO);
-        }
-        UUID platformUser = jdbc.queryForObject(
-                "SELECT id FROM users WHERE user_type = 'SUPER_ADMIN' LIMIT 1", UUID.class);
-        CommissionEngine.EarningNetwork network = commissionEngine.networkForRetailer(agentId);
-        if (retailerShare.signum() > 0) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), agentId, "RETAILER", retailerShare, postingGroup, network);
-        }
-        if (distributorShare.signum() > 0 && distributorId != null) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), distributorId, "DISTRIBUTOR", distributorShare, postingGroup, network);
-        }
-        if (res.platformShare().signum() > 0) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), platformUser, "PLATFORM", res.platformShare(), postingGroup, network);
-        }
-        log.info("COMMISSION_SPLIT txnId={} retailer={} distributor={} platform={}",
-                txnId, retailerShare, distributorShare, res.platformShare());
+        commissionEngine.creditRewards(txnId, agentId, "CASHOUT_UPI", amount);
     }
 
     private void expireStale(UUID retailerId, BigDecimal amount, String mobile) {

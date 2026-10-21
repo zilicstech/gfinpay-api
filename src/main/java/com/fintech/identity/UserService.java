@@ -157,6 +157,9 @@ public class UserService {
                     """, userId, userType, parentId, createdBy, fullName, mobile, mail,
                     passwordEncoder.encode(password), status);
             UUID walletId = walletService.createForUser(userId);
+            if ("RETAILER".equals(userType) || "MASTER_DISTRIBUTOR".equals(userType)) {
+                walletService.ensureRewards(userId);
+            }
             if ("RETAILER".equals(userType)) {
                 String addressJson = toAddressJson(city, state, pincode);
                 jdbc.update("""

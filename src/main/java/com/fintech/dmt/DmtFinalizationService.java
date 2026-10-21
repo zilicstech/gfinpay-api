@@ -93,39 +93,6 @@ public class DmtFinalizationService implements WebhookHandler {
 
     private void postCommissions(UUID txnId, UUID agentId, BigDecimal amount,
                                  WalletService.WalletInfo agentWallet) {
-        CommissionEngine.Resolution res = commissionEngine.resolve(agentId, "DMT", amount);
-        BigDecimal r = res.retailerShare();
-        BigDecimal d = res.distributorShare();
-        if (r.add(d).signum() <= 0 && res.platformShare().signum() <= 0) {
-            return;
-        }
-        UUID distributorId = jdbc.queryForObject("SELECT parent_id FROM users WHERE id = ?", UUID.class, agentId);
-        UUID postingGroup = UUID.randomUUID();
-        if (r.add(d).signum() > 0) {
-            if (r.signum() > 0) {
-                ledgerService.post(txnId, agentWallet.walletId(), "CREDIT", r, "Commission: retailer");
-                walletService.adjustCache(agentWallet.walletId(), r, BigDecimal.ZERO);
-            }
-            WalletService.WalletInfo distWallet = null;
-            if (d.signum() > 0) {
-                distWallet = walletService.lockByUser(distributorId);
-                ledgerService.post(txnId, distWallet.walletId(), "CREDIT", d, "Commission: distributor");
-                walletService.adjustCache(distWallet.walletId(), d, BigDecimal.ZERO);
-            }
-        }
-        UUID platformUser = jdbc.queryForObject(
-                "SELECT id FROM users WHERE user_type = 'SUPER_ADMIN' LIMIT 1", UUID.class);
-        CommissionEngine.EarningNetwork network = commissionEngine.networkForRetailer(agentId);
-        if (r.signum() > 0) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), agentId, "RETAILER", r, postingGroup, network);
-        }
-        if (d.signum() > 0) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), distributorId, "DISTRIBUTOR", d, postingGroup, network);
-        }
-        if (res.platformShare().signum() > 0) {
-            commissionEngine.recordEarning(txnId, res.ruleId(), platformUser, "PLATFORM", res.platformShare(), postingGroup, network);
-        }
-        log.info("COMMISSION_SPLIT txnId={} retailer={} distributor={} platform={}",
-                txnId, r, d, res.platformShare());
+        commissionEngine.creditRewards(txnId, agentId, "DMT", amount);
     }
 }

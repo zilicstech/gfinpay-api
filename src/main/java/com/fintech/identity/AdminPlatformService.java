@@ -22,6 +22,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -373,7 +374,9 @@ public class AdminPlatformService {
     public List<Map<String, Object>> listServices() {
         return jdbc.queryForList("""
                 SELECT code, name, description, enabled, sort_order, updated_at
-                  FROM platform_services ORDER BY sort_order
+                  FROM platform_services
+                 WHERE code <> 'LEAD_GEN'
+                 ORDER BY sort_order
                 """);
     }
 
@@ -385,6 +388,105 @@ public class AdminPlatformService {
             throw ApiException.of(HttpStatus.NOT_FOUND, "SERVICE_NOT_FOUND", "Unknown service code");
         }
         return jdbc.queryForMap("SELECT code, name, description, enabled, updated_at FROM platform_services WHERE code = ?", code);
+    }
+
+    public Map<String, Object> commission(String serviceCode) {
+        access.requireSuperAdminOrPlatformAdmin();
+        return commissionView(serviceCode);
+    }
+
+    @Transactional
+    public Map<String, Object> saveCommission(String serviceCode, String mode, BigDecimal retailer,
+                                              BigDecimal distributor, BigDecimal hub) {
+        access.requireSuperAdminOrPlatformAdmin();
+        String kind = mode == null ? "" : mode.trim().toUpperCase();
+        if (!"FLAT".equals(kind) && !"PERCENT".equals(kind)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_COMMISSION", "Choose flat or percentage");
+        }
+        BigDecimal retailerValue = nonNegative(retailer);
+        BigDecimal distributorValue = nonNegative(distributor);
+        BigDecimal hubValue = nonNegative(hub);
+        if ("PERCENT".equals(kind) && (retailerValue.compareTo(new BigDecimal("100")) > 0
+                || distributorValue.compareTo(new BigDecimal("100")) > 0
+                || hubValue.compareTo(new BigDecimal("100")) > 0)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_COMMISSION", "A percentage cannot be more than 100");
+        }
+        String txnType = commissionTxnType(serviceCode);
+        BigDecimal retailerPct = "PERCENT".equals(kind) ? retailerValue : BigDecimal.ZERO;
+        BigDecimal distributorPct = "PERCENT".equals(kind) ? distributorValue : BigDecimal.ZERO;
+        BigDecimal hubPct = "PERCENT".equals(kind) ? hubValue : BigDecimal.ZERO;
+        BigDecimal retailerAmount = "FLAT".equals(kind) ? retailerValue : null;
+        BigDecimal distributorAmount = "FLAT".equals(kind) ? distributorValue : null;
+        BigDecimal hubAmount = "FLAT".equals(kind) ? hubValue : null;
+        int updated = jdbc.update("""
+                UPDATE commission_rules
+                   SET commission_type = ?, retailer_amount = ?, distributor_amount = ?, hub_amount = ?,
+                       retailer_share_pct = ?, distributor_share_pct = ?, hub_share_pct = ?, platform_share_pct = 0
+                 WHERE txn_type = ? AND effective_to IS NULL
+                """, kind, retailerAmount, distributorAmount, hubAmount,
+                retailerPct, distributorPct, hubPct, txnType);
+        if (updated == 0) {
+            jdbc.update("""
+                    INSERT INTO commission_rules
+                        (id, txn_type, slab_min, slab_max, total_rate_bp, flat_fee,
+                         retailer_share_pct, distributor_share_pct, platform_share_pct, hub_share_pct,
+                         commission_type, retailer_amount, distributor_amount, hub_amount, effective_from)
+                    VALUES (?, ?, 0, 999999999, 0, NULL, ?, ?, 0, ?, ?, ?, ?, ?, now())
+                    """, UUID.randomUUID(), txnType, retailerPct, distributorPct, hubPct,
+                    kind, retailerAmount, distributorAmount, hubAmount);
+        }
+        log.info("COMMISSION_SET service={} type={} mode={} retailer={} distributor={} hub={}",
+                serviceCode, txnType, kind, retailerValue, distributorValue, hubValue);
+        return commissionView(serviceCode);
+    }
+
+    private Map<String, Object> commissionView(String serviceCode) {
+        String txnType = commissionTxnType(serviceCode);
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT commission_type, retailer_amount, distributor_amount, hub_amount,
+                       retailer_share_pct, distributor_share_pct, hub_share_pct
+                  FROM commission_rules
+                 WHERE txn_type = ? AND effective_to IS NULL
+                 ORDER BY effective_from DESC
+                 LIMIT 1
+                """, txnType);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("serviceCode", serviceCode);
+        out.put("txnType", txnType);
+        if (rows.isEmpty()) {
+            out.put("mode", "FLAT");
+            out.put("retailer", BigDecimal.ZERO);
+            out.put("distributor", BigDecimal.ZERO);
+            out.put("hub", BigDecimal.ZERO);
+            return out;
+        }
+        Map<String, Object> row = rows.get(0);
+        boolean percent = "PERCENT".equalsIgnoreCase(String.valueOf(row.get("commission_type")));
+        out.put("mode", percent ? "PERCENT" : "FLAT");
+        out.put("retailer", valueOf(percent ? row.get("retailer_share_pct") : row.get("retailer_amount")));
+        out.put("distributor", valueOf(percent ? row.get("distributor_share_pct") : row.get("distributor_amount")));
+        out.put("hub", valueOf(percent ? row.get("hub_share_pct") : row.get("hub_amount")));
+        return out;
+    }
+
+    private static String commissionTxnType(String serviceCode) {
+        String code = serviceCode == null ? "" : serviceCode.trim().toUpperCase();
+        return switch (code) {
+            case "UPI_CASHOUT" -> "CASHOUT_UPI";
+            case "FD_CARD" -> "FD_CARD";
+            default -> code;
+        };
+    }
+
+    private static BigDecimal nonNegative(BigDecimal value) {
+        if (value == null || value.signum() < 0) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_COMMISSION", "Amounts cannot be negative");
+        }
+        return value;
+    }
+
+    private static BigDecimal valueOf(Object value) {
+        return value instanceof BigDecimal amount ? amount : BigDecimal.ZERO;
     }
 
     public List<Map<String, Object>> listUsers(String userType) {
@@ -683,6 +785,53 @@ public class AdminPlatformService {
         return Map.of("id", userId, "reset", true);
     }
 
+    /** Puts one finished bank check back on the retailer's KYC page. Onboarding stays complete. */
+    @Transactional
+    public Map<String, Object> reopenBankEkyc(UUID userId, String bankName) {
+        access.assertNetworkUser(userId);
+        String bank = bankName == null ? "" : bankName.trim().toLowerCase(Locale.ROOT);
+        if (!"bank2".equals(bank) && !"bank6".equals(bank)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "UNKNOWN_BANK",
+                    "Choose money transfer or cash out eKYC.");
+        }
+        String type;
+        try {
+            type = jdbc.queryForObject("SELECT user_type::text FROM users WHERE id = ?", String.class, userId);
+        } catch (EmptyResultDataAccessException e) {
+            throw ApiException.of(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User does not exist");
+        }
+        if (!"RETAILER".equals(type)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "NOT_A_RETAILER",
+                    "Bank eKYC can be reopened for a retailer.");
+        }
+        int updated = jdbc.update("""
+                UPDATE paysprint_bank_ekyc
+                   SET status = 'PENDING',
+                       completed_at = NULL,
+                       last_message = 'Scan again so this check includes CASA.',
+                       updated_at = now()
+                 WHERE user_id = ? AND bank_name = ? AND status = 'SUCCESS'
+                """, userId, bank);
+        if (updated == 0) {
+            Integer exists = jdbc.queryForObject(
+                    "SELECT count(*)::int FROM paysprint_bank_ekyc WHERE user_id = ? AND bank_name = ?",
+                    Integer.class, userId, bank);
+            if (exists == null || exists == 0) {
+                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "EKYC_NOT_DONE",
+                        "This bank check has not been completed yet.");
+            }
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "EKYC_ALREADY_OPEN",
+                    "This bank check is already waiting for a new scan.");
+        }
+        jdbc.update("""
+                UPDATE agent_kyc_profiles
+                   SET bank_status = 'PENDING', updated_at = now()
+                 WHERE user_id = ?
+                """, userId);
+        log.info("MERCHANT_EKYC reopen userId={} pipe={}", userId, bank);
+        return Map.of("id", userId, "bank", bank, "status", "PENDING");
+    }
+
     @Transactional
     public Map<String, Object> setWalletFrozen(UUID userId, boolean frozen) {
         access.assertNetworkUser(userId);
@@ -964,6 +1113,9 @@ public class AdminPlatformService {
             if (!"SUPER_ADMIN".equals(userType) && !"ADMIN".equals(userType) && !"HUBADMIN".equals(userType) && !"AUDITOR".equals(userType)) {
                 walletService.createForUser(userId);
             }
+            if ("RETAILER".equals(userType) || "MASTER_DISTRIBUTOR".equals(userType) || "HUBADMIN".equals(userType)) {
+                walletService.ensureRewards(userId);
+            }
             if ("MASTER_DISTRIBUTOR".equals(userType)) {
                 jdbc.update("""
                         INSERT INTO agent_kyc_profiles (user_id, kyc_status)
@@ -1066,7 +1218,7 @@ public class AdminPlatformService {
         }
         Map<String, Object> row = kyc.get(0);
         row.put("banks", jdbc.queryForList("""
-                SELECT bank_name, status, completed_at, last_message
+                SELECT bank_name, status, completed_at, last_message, is_dmt_active
                   FROM paysprint_bank_ekyc
                  WHERE user_id = ?
                  ORDER BY bank_name

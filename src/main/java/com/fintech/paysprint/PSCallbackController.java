@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fintech.cashout.UpiCashoutCallbackService;
+import com.fintech.dmt.DmtAccountOpeningService;
 import com.fintech.identity.RetailerPaysprintEkycService;
 import com.fintech.identity.RetailerPaysprintEkycService.PaysprintCallbackRejected;
 import com.fintech.platform.web.ApiException;
@@ -38,15 +39,18 @@ public class PSCallbackController {
 
     private final RetailerPaysprintEkycService ekyc;
     private final UpiCashoutCallbackService cashout;
+    private final DmtAccountOpeningService accountOpening;
     private final ProviderCallbackLog callbacks;
     private final ObjectMapper mapper;
 
     public PSCallbackController(RetailerPaysprintEkycService ekyc,
                                 UpiCashoutCallbackService cashout,
+                                DmtAccountOpeningService accountOpening,
                                 ProviderCallbackLog callbacks,
                                 ObjectMapper mapper) {
         this.ekyc = ekyc;
         this.cashout = cashout;
+        this.accountOpening = accountOpening;
         this.callbacks = callbacks;
         this.mapper = mapper;
     }
@@ -87,6 +91,9 @@ public class PSCallbackController {
                         document(event, body, null), "IGNORED", null);
                 log.info("UPI_CASHOUT out event=UPI-CASHOUT-2FA outcome=IGNORED http=200 merchantcode={}", merchantCode(body));
                 return completed();
+            }
+            if ("DMT_CASA_AO_DEBIT_NOTIFY".equals(event)) {
+                return accountOpening(body, event);
             }
             if ("MERCHANT_STATUS_ONBOARD".equals(event)) {
                 JsonNode claims = ekyc.verifiedClaims(body);
@@ -141,6 +148,53 @@ public class PSCallbackController {
             callbacks.record(PROVIDER, "redirect", text(claims, "event"), statusOf(null, claims),
                     first(claims, "merchantcode", "merchant_id"), claims, "REJECTED", e.getMessage());
             return html(HttpStatus.BAD_REQUEST, "This eKYC result could not be confirmed.");
+        }
+    }
+
+    private ResponseEntity<Map<String, Object>> accountOpening(JsonNode body, String event) {
+        JsonNode param = body.path("param");
+        JsonNode data = param.path("data");
+        int responseCode = param.path("response_code").asInt(-1);
+        String merchant = merchantCode(body);
+        log.info("DMT_CASA ao in event={} merchantcode={} response_code={} mobile={} amount={} message={}",
+                event, merchant, responseCode, data.path("mobile").asText(""), data.path("amount").asText(""),
+                clip(param.path("message").asText("")));
+        JsonNode claims;
+        try {
+            claims = accountOpening.verifiedClaims(body);
+        } catch (JwtException | IllegalArgumentException e) {
+            log.info("DMT_CASA ao out outcome=REJECTED http=400 merchantcode={} response_code={} reason={}",
+                    merchant, responseCode, e.getMessage());
+            callbacks.record(PROVIDER, "dmt-casa", event, Integer.toString(responseCode), merchant, null, "REJECTED", e.getMessage());
+            return failed();
+        }
+        JsonNode stored = document(event, body, claims);
+        try {
+            if (responseCode == 0) {
+                long refid = accountOpening.debit(data);
+                callbacks.record(PROVIDER, "dmt-casa", event, Integer.toString(responseCode), merchant, stored, "APPLIED", null);
+                log.info("DMT_CASA ao out outcome=APPLIED http=200 merchantcode={} response_code={} refid={}",
+                        merchant, responseCode, refid);
+                return ResponseEntity.ok(Map.of(
+                        "status", 200,
+                        "message", "Success",
+                        "refid", refid,
+                        "redirect_url", accountOpening.redirectUrl()));
+            }
+            if (responseCode == 1) {
+                accountOpening.complete(data);
+                callbacks.record(PROVIDER, "dmt-casa", event, Integer.toString(responseCode), merchant, stored, "APPLIED", null);
+                log.info("DMT_CASA ao out outcome=APPLIED http=200 merchantcode={} response_code=1", merchant);
+                return completed();
+            }
+            log.info("DMT_CASA ao out outcome=IGNORED http=200 merchantcode={} response_code={}", merchant, responseCode);
+            callbacks.record(PROVIDER, "dmt-casa", event, Integer.toString(responseCode), merchant, stored, "IGNORED", null);
+            return completed();
+        } catch (DmtAccountOpeningService.Rejected | ApiException e) {
+            log.info("DMT_CASA ao out outcome=REJECTED http=400 merchantcode={} response_code={} reason={}",
+                    merchant, responseCode, e.getMessage());
+            callbacks.record(PROVIDER, "dmt-casa", event, Integer.toString(responseCode), merchant, stored, "REJECTED", e.getMessage());
+            return failed();
         }
     }
 

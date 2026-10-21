@@ -51,6 +51,11 @@ public class PaysprintLeadClient {
         return new Journey(data.path("url").asText(), data.path("encdata").asText());
     }
 
+    public JsonNode status(String refid) {
+        log.info("PAYSPRINT_LEAD status_check refid={}", refid);
+        return post("/lead/generation/status_check", Map.of("refid", refid));
+    }
+
     private String merchantCode() {
         return props.merchantCodeOrPartner();
     }
