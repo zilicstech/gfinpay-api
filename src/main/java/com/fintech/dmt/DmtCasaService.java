@@ -2,6 +2,7 @@ package com.fintech.dmt;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fintech.identity.MerchantActivationService;
 import com.fintech.paysprint.PaysprintDmtCasaClient;
 import com.fintech.paysprint.PaysprintMessages;
 import com.fintech.platform.PlatformServiceGate;
@@ -31,14 +32,17 @@ public class DmtCasaService {
     private final PaysprintDmtCasaClient paysprint;
     private final DmtCasaLedger ledger;
     private final PlatformServiceGate services;
+    private final MerchantActivationService activation;
 
     public DmtCasaService(JdbcTemplate jdbc, ObjectMapper mapper, PaysprintDmtCasaClient paysprint,
-                          DmtCasaLedger ledger, PlatformServiceGate services) {
+                          DmtCasaLedger ledger, PlatformServiceGate services,
+                          MerchantActivationService activation) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.paysprint = paysprint;
         this.ledger = ledger;
         this.services = services;
+        this.activation = activation;
     }
 
     public Map<String, Object> queryRemitter(AuthPrincipal me, String mobile) {
@@ -580,12 +584,9 @@ public class DmtCasaService {
 
     private void requireReady(UUID userId) {
         services.requireEnabled(PlatformServiceGate.DMT);
-        Integer ready = jdbc.queryForObject("""
-                SELECT count(*)::int FROM paysprint_bank_ekyc WHERE user_id = ? AND is_dmt_active
-                """, Integer.class, userId);
-        if (ready == null || ready == 0) {
+        if (!activation.dmtActive(userId)) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "DMT_INACTIVE",
-                    "Activate DMT before sending money");
+                    "Activate DMT on bank 2 and bank 6 before sending money");
         }
     }
 

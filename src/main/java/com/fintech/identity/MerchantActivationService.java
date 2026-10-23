@@ -196,12 +196,17 @@ public class MerchantActivationService {
                 bank, code, aadhaar.substring(aadhaar.length() - 4), responseCode);
     }
 
-    private boolean dmtActive(java.util.UUID userId) {
-        Integer n = jdbc.queryForObject("""
-                SELECT count(*)::int FROM paysprint_bank_ekyc
-                 WHERE user_id = ? AND is_dmt_active
-                """, Integer.class, userId);
-        return n != null && n > 0;
+    public boolean dmtActive(java.util.UUID userId) {
+        for (String bank : requiredBanks()) {
+            Integer n = jdbc.queryForObject("""
+                    SELECT count(*)::int FROM paysprint_bank_ekyc
+                     WHERE user_id = ? AND bank_name = ? AND is_dmt_active
+                    """, Integer.class, userId, bank);
+            if (n == null || n == 0) {
+                return false;
+            }
+        }
+        return !requiredBanks().isEmpty();
     }
 
     private String refreshBankStatus(java.util.UUID userId) {
