@@ -26,7 +26,8 @@ public class RetailerEkycController {
             @NotBlank String pidData,
             String latitude,
             String longitude,
-            Boolean activateDmt) {}
+            Boolean activateDmt,
+            String pipe) {}
 
     public record DeviceEventRequest(
             @NotBlank String stage,
@@ -67,7 +68,7 @@ public class RetailerEkycController {
                                                      @PathVariable String pipe,
                                                      @Valid @RequestBody ActivateRequest body) {
         boolean activateDmt = body.activateDmt() == null || body.activateDmt();
-        return ApiResponse.ok(activation.activate(me, pipe, body.aadhaar(), body.dob(), body.pidData(),
+        return ApiResponse.ok(activation.activate(me, pipe, body.pipe(), body.aadhaar(), body.dob(), body.pidData(),
                 body.latitude(), body.longitude(), activateDmt));
     }
 

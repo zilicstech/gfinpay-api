@@ -87,10 +87,10 @@ public class MerchantActivationService {
         return out;
     }
 
-    public Map<String, Object> activate(AuthPrincipal me, String pipe, String aadhaar, String dob, String pidData,
-                                        String latitude, String longitude, boolean activateDmt) {
+    public Map<String, Object> activate(AuthPrincipal me, String pipe, String requestedPipe, String aadhaar, String dob,
+                                        String pidData, String latitude, String longitude, boolean activateDmt) {
         requireRetailer(me);
-        String bank = pipe(pipe);
+        String bank = samePipe(pipe, requestedPipe);
         Map<String, Object> profile = profile(me.userId());
         if (!"COMPLETED".equals(text(profile.get("kyc_status"), ""))) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "ONBOARDING_INCOMPLETE",
@@ -131,7 +131,7 @@ public class MerchantActivationService {
         } else if (!"1".equals(responseCode) && !"3".equals(responseCode)) {
             message = outcome.message();
         }
-        record(me.userId(), bank, code, digits, responseCode, outcome.status(), message, activateDmt);
+        boolean pipeDmtActive = record(me.userId(), bank, code, digits, responseCode, outcome.status(), message, activateDmt);
         if (outcome.activated()) {
             jdbc.update("""
                     UPDATE agent_kyc_profiles
@@ -147,7 +147,8 @@ public class MerchantActivationService {
             log.info("MERCHANT_EKYC paysprint response pipe={} response_code={} outcome={}",
                     bank, responseCode, outcome.status());
         }
-        log.info("MERCHANT_EKYC result pipe={} outcome={} bank_status={}", bank, outcome.status(), bankStatus);
+        log.info("MERCHANT_EKYC result pipe={} outcome={} bank_status={} pipe_dmt_active={} all_dmt_active={}",
+                bank, outcome.status(), bankStatus, pipeDmtActive, dmtActive(me.userId()));
         if (!"1".equals(responseCode) && !"3".equals(responseCode)) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "MERCHANT_EKYC_REJECTED", message);
         }
@@ -157,6 +158,8 @@ public class MerchantActivationService {
         out.put("message", "1".equals(responseCode) ? outcome.message() : message);
         out.put("responseCode", responseCode);
         out.put("bankStatus", bankStatus);
+        out.put("isCasa", activateDmt);
+        out.put("pipeDmtActive", pipeDmtActive);
         out.put("dmtActive", dmtActive(me.userId()));
         return out;
     }
@@ -175,25 +178,44 @@ public class MerchantActivationService {
         }
     }
 
-    public void record(java.util.UUID userId, String bank, String code, String aadhaar, String responseCode,
-                       String status, String message, boolean activateDmt) {
+    public boolean record(java.util.UUID userId, String bank, String code, String aadhaar, String responseCode,
+                          String status, String message, boolean activateDmt) {
+        String pipe = pipe(bank);
         boolean dmtOn = "SUCCESS".equals(status) && activateDmt;
-        jdbc.update("""
-                INSERT INTO paysprint_bank_ekyc
-                    (user_id, bank_name, status, completed_at, last_response_code, last_message, attempts, last_attempt_at, is_dmt_active)
-                VALUES (?, ?, ?, CASE WHEN ? = 'SUCCESS' THEN now() ELSE NULL END, ?, ?, 1, now(), ?)
-                ON CONFLICT (user_id, bank_name) DO UPDATE
-                   SET status = EXCLUDED.status,
-                       completed_at = CASE WHEN EXCLUDED.status = 'SUCCESS' THEN now() ELSE paysprint_bank_ekyc.completed_at END,
-                       last_response_code = EXCLUDED.last_response_code,
-                       last_message = EXCLUDED.last_message,
-                       attempts = paysprint_bank_ekyc.attempts + 1,
+        int updated = jdbc.update("""
+                UPDATE paysprint_bank_ekyc
+                   SET status = ?,
+                       completed_at = CASE WHEN ? = 'SUCCESS' THEN now() ELSE completed_at END,
+                       last_response_code = ?,
+                       last_message = ?,
+                       attempts = attempts + 1,
                        last_attempt_at = now(),
-                       is_dmt_active = paysprint_bank_ekyc.is_dmt_active OR EXCLUDED.is_dmt_active,
+                       is_dmt_active = is_dmt_active OR ?,
                        updated_at = now()
-                """, userId, bank, status, status, responseCode, clip(message), dmtOn);
-        log.info("MERCHANT_EKYC stored pipe={} merchantcode={} aadhaar_last4={} response_code={}",
-                bank, code, aadhaar.substring(aadhaar.length() - 4), responseCode);
+                 WHERE user_id = ? AND bank_name = ?
+                """, status, status, responseCode, clip(message), dmtOn, userId, pipe);
+        if (updated == 0) {
+            jdbc.update("""
+                    INSERT INTO paysprint_bank_ekyc
+                        (user_id, bank_name, status, completed_at, last_response_code, last_message, attempts, last_attempt_at, is_dmt_active)
+                    VALUES (?, ?, ?, CASE WHEN ? = 'SUCCESS' THEN now() ELSE NULL END, ?, ?, 1, now(), ?)
+                    ON CONFLICT (user_id, bank_name) DO UPDATE
+                       SET status = EXCLUDED.status,
+                           completed_at = CASE WHEN EXCLUDED.status = 'SUCCESS' THEN now() ELSE paysprint_bank_ekyc.completed_at END,
+                           last_response_code = EXCLUDED.last_response_code,
+                           last_message = EXCLUDED.last_message,
+                           attempts = paysprint_bank_ekyc.attempts + 1,
+                           last_attempt_at = now(),
+                           is_dmt_active = paysprint_bank_ekyc.is_dmt_active OR EXCLUDED.is_dmt_active,
+                           updated_at = now()
+                     WHERE paysprint_bank_ekyc.bank_name = EXCLUDED.bank_name
+                    """, userId, pipe, status, status, responseCode, clip(message), dmtOn);
+        }
+        boolean storedDmt = bankDmtActive(userId, pipe);
+        log.info("MERCHANT_EKYC stored pipe={} merchantcode={} aadhaar_last4={} response_code={} is_casa={} is_dmt_active={} rows={}",
+                pipe, code, aadhaar.substring(aadhaar.length() - 4), responseCode, activateDmt ? "1" : "0", storedDmt,
+                updated == 0 ? 1 : updated);
+        return storedDmt;
     }
 
     public boolean dmtActive(java.util.UUID userId) {
@@ -294,6 +316,23 @@ public class MerchantActivationService {
         if (me == null || !"RETAILER".equals(me.userType())) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Only a retailer can complete this eKYC.");
         }
+    }
+
+    private boolean bankDmtActive(java.util.UUID userId, String bank) {
+        List<Boolean> rows = jdbc.query("""
+                SELECT is_dmt_active FROM paysprint_bank_ekyc
+                 WHERE user_id = ? AND bank_name = ?
+                """, (rs, rowNum) -> rs.getBoolean("is_dmt_active"), userId, bank);
+        return !rows.isEmpty() && Boolean.TRUE.equals(rows.get(0));
+    }
+
+    private static String samePipe(String pathPipe, String bodyPipe) {
+        String bank = pipe(pathPipe);
+        if (bodyPipe != null && !bodyPipe.isBlank() && !bank.equals(pipe(bodyPipe))) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "PIPE_MISMATCH",
+                    "This scan does not match the selected bank.");
+        }
+        return bank;
     }
 
     private static String pipe(String pipe) {
