@@ -1,5 +1,6 @@
 package com.fintech.vendor;
 
+import com.fintech.hospicash.HospiCashService;
 import com.fintech.platform.web.ApiResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -17,9 +18,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class PublicVendorController {
 
     private final VendorService vendors;
+    private final HospiCashService hospi;
 
-    public PublicVendorController(VendorService vendors) {
+    public PublicVendorController(VendorService vendors, HospiCashService hospi) {
         this.vendors = vendors;
+        this.hospi = hospi;
     }
 
     public record MintAffiliateRequest(@NotBlank String employeeName, @NotBlank String employeeCode) {}
@@ -59,5 +62,11 @@ public class PublicVendorController {
                 req.state(),
                 req.pincode(),
                 UUID.fromString(req.catalogItemId())));
+    }
+
+    @PostMapping("/affiliates/{token}/hospi-cash")
+    public ApiResponse<Map<String, Object>> hospiCash(@PathVariable String token,
+                                                      @RequestBody HospiCashService.Capture capture) {
+        return ApiResponse.ok(hospi.sellForAffiliate(token, capture));
     }
 }

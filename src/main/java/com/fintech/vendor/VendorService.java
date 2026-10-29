@@ -79,6 +79,16 @@ public class VendorService {
                  ORDER BY l.updated_at DESC
                  LIMIT 500
                 """, id));
+        vendor.put("hospi_cash", jdbc.queryForList("""
+                SELECT s.id, s.gfin_sale_code, s.customer_name, s.mobile, s.premium_amount,
+                       s.vendor_payment_status, s.activation_status, s.state, s.created_at,
+                       a.employee_name, a.employee_code, a.gfin_code AS employee_gfin_code
+                  FROM hospi_cash_sales s
+                  LEFT JOIN vendor_affiliates a ON a.id = s.affiliate_id
+                 WHERE s.vendor_id = ?
+                 ORDER BY s.created_at DESC
+                 LIMIT 500
+                """, id));
         return vendor;
     }
 
@@ -218,6 +228,23 @@ public class VendorService {
         out.put("employee_name", row.get("employee_name"));
         out.put("employee_gfin_code", row.get("employee_gfin_code"));
         out.put("products", products);
+        List<Map<String, Object>> hospi = jdbc.queryForList(
+                "SELECT enabled FROM platform_services WHERE code = 'HOSPI_CASH'");
+        out.put("hospi_cash_enabled", !hospi.isEmpty() && Boolean.TRUE.equals(hospi.get(0).get("enabled")));
+        List<Map<String, Object>> price = jdbc.queryForList("""
+                SELECT selling_price, discount_amount
+                  FROM hospi_cash_settings
+                 WHERE id IS TRUE
+                """);
+        if (!price.isEmpty()) {
+            out.put("hospi_cash_selling_price", price.get(0).get("selling_price"));
+            out.put("hospi_cash_discount", price.get(0).get("discount_amount"));
+            Object selling = price.get(0).get("selling_price");
+            Object discount = price.get(0).get("discount_amount");
+            if (selling instanceof java.math.BigDecimal list && discount instanceof java.math.BigDecimal off) {
+                out.put("hospi_cash_payable", list.subtract(off));
+            }
+        }
         return out;
     }
 

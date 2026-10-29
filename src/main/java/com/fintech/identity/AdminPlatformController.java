@@ -48,7 +48,8 @@ public class AdminPlatformController {
     public record ServiceToggleRequest(@NotNull Boolean enabled) {}
 
     public record CommissionRequest(@NotBlank String mode, @NotNull BigDecimal retailer,
-                                    @NotNull BigDecimal distributor, @NotNull BigDecimal hub) {}
+                                    @NotNull BigDecimal distributor, @NotNull BigDecimal hub,
+                                    BigDecimal vendorCommission) {}
 
     public record SettingUpdateRequest(@NotBlank String value) {}
 
@@ -214,7 +215,8 @@ public class AdminPlatformController {
     @PreAuthorize("hasAuthority('settings.manage')")
     public ApiResponse<Map<String, Object>> saveCommission(@PathVariable String code,
                                                            @Valid @RequestBody CommissionRequest req) {
-        return ApiResponse.ok(admin.saveCommission(code, req.mode(), req.retailer(), req.distributor(), req.hub()));
+        return ApiResponse.ok(admin.saveCommission(code, req.mode(), req.retailer(), req.distributor(), req.hub(),
+                req.vendorCommission()));
     }
 
     @GetMapping("/users")

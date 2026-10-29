@@ -16,6 +16,7 @@ import com.fintech.platform.web.PageWindow;
 import com.fintech.recon.ReconJson;
 import com.fintech.reports.DashboardSnapshotService;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.sql.Date;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
@@ -397,7 +398,7 @@ public class AdminPlatformService {
 
     @Transactional
     public Map<String, Object> saveCommission(String serviceCode, String mode, BigDecimal retailer,
-                                              BigDecimal distributor, BigDecimal hub) {
+                                              BigDecimal distributor, BigDecimal hub, BigDecimal vendorCommission) {
         access.requireSuperAdminOrPlatformAdmin();
         String kind = mode == null ? "" : mode.trim().toUpperCase();
         if (!"FLAT".equals(kind) && !"PERCENT".equals(kind)) {
@@ -435,6 +436,14 @@ public class AdminPlatformService {
                     """, UUID.randomUUID(), txnType, retailerPct, distributorPct, hubPct,
                     kind, retailerAmount, distributorAmount, hubAmount);
         }
+        if ("HOSPI_CASH".equalsIgnoreCase(serviceCode) && vendorCommission != null) {
+            BigDecimal vendor = nonNegative(vendorCommission).setScale(2, RoundingMode.HALF_UP);
+            jdbc.update("""
+                    UPDATE hospi_cash_settings
+                       SET vendor_commission = ?, updated_at = now()
+                     WHERE id IS TRUE
+                    """, vendor);
+        }
         log.info("COMMISSION_SET service={} type={} mode={} retailer={} distributor={} hub={}",
                 serviceCode, txnType, kind, retailerValue, distributorValue, hubValue);
         return commissionView(serviceCode);
@@ -458,6 +467,7 @@ public class AdminPlatformService {
             out.put("retailer", BigDecimal.ZERO);
             out.put("distributor", BigDecimal.ZERO);
             out.put("hub", BigDecimal.ZERO);
+            attachVendorCommission(serviceCode, out);
             return out;
         }
         Map<String, Object> row = rows.get(0);
@@ -466,7 +476,19 @@ public class AdminPlatformService {
         out.put("retailer", valueOf(percent ? row.get("retailer_share_pct") : row.get("retailer_amount")));
         out.put("distributor", valueOf(percent ? row.get("distributor_share_pct") : row.get("distributor_amount")));
         out.put("hub", valueOf(percent ? row.get("hub_share_pct") : row.get("hub_amount")));
+        attachVendorCommission(serviceCode, out);
         return out;
+    }
+
+    private void attachVendorCommission(String serviceCode, Map<String, Object> out) {
+        if (!"HOSPI_CASH".equalsIgnoreCase(serviceCode)) {
+            return;
+        }
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT vendor_commission FROM hospi_cash_settings WHERE id IS TRUE
+                """);
+        out.put("vendorCommission", rows.isEmpty() ? BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP)
+                : valueOf(rows.get(0).get("vendor_commission")).setScale(2, RoundingMode.HALF_UP));
     }
 
     private static String commissionTxnType(String serviceCode) {
@@ -474,6 +496,7 @@ public class AdminPlatformService {
         return switch (code) {
             case "UPI_CASHOUT" -> "CASHOUT_UPI";
             case "FD_CARD" -> "FD_CARD";
+            case "HOSPI_CASH" -> "HOSPI_CASH";
             default -> code;
         };
     }

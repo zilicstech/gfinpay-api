@@ -17,6 +17,7 @@ public class PlatformServiceGate {
     public static final String UPI_CASHOUT = "UPI_CASHOUT";
     public static final String BBPS = "BBPS";
     public static final String LEAD_GEN = "LEAD_GEN";
+    public static final String HOSPI_CASH = "HOSPI_CASH";
     public static final Set<String> LEAD_CATEGORIES = Set.of(
             "CREDIT_CARD", "INSTANT_LOAN", "PERSONAL_LOAN", "BUSINESS_LOAN", "SAVINGS");
 
@@ -48,7 +49,7 @@ public class PlatformServiceGate {
     }
 
     public void requireLeadSalesEnabled() {
-        if (!fdProviders.isModuleEnabled() && !anyLeadEnabled()) {
+        if (!fdProviders.isModuleEnabled() && !anyLeadEnabled() && !isEnabled(HOSPI_CASH)) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "SERVICE_DISABLED",
                     "Customer sales are switched off by the platform");
         }
