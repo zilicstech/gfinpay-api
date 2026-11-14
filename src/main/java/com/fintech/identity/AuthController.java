@@ -28,7 +28,24 @@ public class AuthController {
     /** Cookie-authenticated endpoints require this header, which forces a CORS preflight. */
     private static final String REQUESTED_WITH = "fintech-app";
 
-    public record LoginRequest(String identifier, String mobile, @NotBlank String password) {}
+    public record LoginRequest(String identifier, String mobile, @NotBlank String password, String pin, String newPin) {
+        public LoginRequest(String identifier, String mobile, String password) {
+            this(identifier, mobile, password, null, null);
+        }
+        public LoginRequest(String identifier, String mobile, String password, String pin) {
+            this(identifier, mobile, password, pin, null);
+        }
+    }
+
+    public record ResetOtpRequest(@NotBlank String identifier) {}
+
+    public record ResetVerifyRequest(@NotBlank String identifier, @NotBlank String otp) {}
+
+    public record ResetConfirmRequest(@NotBlank String resetToken, String newPassword, String newPin) {}
+
+    public record LoginOtpRequest(@NotBlank String identifier) {}
+
+    public record LoginOtpVerifyRequest(@NotBlank String identifier, @NotBlank String otp) {}
 
     private final UserService userService;
     private final SessionService sessions;
@@ -48,10 +65,33 @@ public class AuthController {
         String identifier = request.identifier() != null && !request.identifier().isBlank()
                 ? request.identifier()
                 : request.mobile();
-        UserService.LoginResult result = userService.login(identifier, request.password(), forwardedFor, userAgent);
+        UserService.LoginResult result = userService.login(
+                identifier, request.password(), request.pin(), request.newPin(), forwardedFor, userAgent);
 
         HttpHeaders headers = new HttpHeaders();
-        cookies.attach(headers, result.refreshCookie(), result.refreshExpiresAt());
+        if (result.refreshCookie() != null && !result.refreshCookie().isBlank()) {
+            cookies.attach(headers, result.refreshCookie(), result.refreshExpiresAt());
+        }
+        return ResponseEntity.ok().headers(headers).body(ApiResponse.ok(result.body()));
+    }
+
+    @PostMapping("/otp/send")
+    public ApiResponse<Map<String, Object>> sendLoginOtp(@RequestBody LoginOtpRequest request) {
+        return ApiResponse.ok(userService.requestLoginOtp(request.identifier()));
+    }
+
+    @PostMapping("/otp/verify")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> verifyLoginOtp(
+            @RequestBody LoginOtpVerifyRequest request,
+            @RequestHeader(value = "X-Forwarded-For", required = false) String forwardedFor,
+            @RequestHeader(value = "User-Agent", required = false) String userAgent) {
+        UserService.LoginResult result = userService.verifyLoginOtp(
+                request.identifier(), request.otp(), forwardedFor, userAgent);
+
+        HttpHeaders headers = new HttpHeaders();
+        if (result.refreshCookie() != null && !result.refreshCookie().isBlank()) {
+            cookies.attach(headers, result.refreshCookie(), result.refreshExpiresAt());
+        }
         return ResponseEntity.ok().headers(headers).body(ApiResponse.ok(result.body()));
     }
 
@@ -92,6 +132,22 @@ public class AuthController {
         HttpHeaders headers = new HttpHeaders();
         cookies.clear(headers);
         return ResponseEntity.ok().headers(headers).body(ApiResponse.ok(Map.of("loggedOut", true)));
+    }
+
+    @PostMapping("/reset/otp")
+    public ApiResponse<Map<String, Object>> requestResetOtp(@RequestBody ResetOtpRequest request) {
+        return ApiResponse.ok(userService.requestResetOtp(request.identifier()));
+    }
+
+    @PostMapping("/reset/verify")
+    public ApiResponse<Map<String, Object>> verifyResetOtp(@RequestBody ResetVerifyRequest request) {
+        return ApiResponse.ok(userService.verifyResetOtp(request.identifier(), request.otp()));
+    }
+
+    @PostMapping("/reset/confirm")
+    public ApiResponse<Map<String, Object>> confirmReset(@RequestBody ResetConfirmRequest request) {
+        return ApiResponse.ok(userService.confirmReset(
+                request.resetToken(), request.newPassword(), request.newPin()));
     }
 
     private static void requireRequestedWith(String requestedWith) {

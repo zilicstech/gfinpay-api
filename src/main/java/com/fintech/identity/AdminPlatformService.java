@@ -4,6 +4,7 @@ import com.fintech.finance.FinanceService;
 import com.fintech.ledger.LedgerService;
 import com.fintech.ledger.TransactionService;
 import com.fintech.ledger.WalletService;
+import com.fintech.onboarding.JourneyTracker;
 import com.fintech.persistence.config.PlatformServiceRepository;
 import com.fintech.persistence.finance.AgentKycProfileRepository;
 import com.fintech.persistence.identity.UserRepository;
@@ -55,13 +56,15 @@ public class AdminPlatformService {
     private final WalletRepository walletRepository;
     private final PlatformServiceRepository platformServices;
     private final AgentKycProfileRepository kycProfiles;
+    private final JourneyTracker journeyTracker;
 
     public AdminPlatformService(JdbcTemplate jdbc, PasswordEncoder passwordEncoder, WalletService walletService,
                                 LedgerService ledgerService, TransactionService transactionService,
                                 AdminAccess access, DashboardSnapshotService snapshot,
                                 ObjectMapper objectMapper, FinanceService finance, SessionService sessions,
                                 UserRepository userRepository, WalletRepository walletRepository,
-                                PlatformServiceRepository platformServices, AgentKycProfileRepository kycProfiles) {
+                                PlatformServiceRepository platformServices, AgentKycProfileRepository kycProfiles,
+                                JourneyTracker journeyTracker) {
         this.jdbc = jdbc;
         this.passwordEncoder = passwordEncoder;
         this.walletService = walletService;
@@ -76,6 +79,7 @@ public class AdminPlatformService {
         this.walletRepository = walletRepository;
         this.platformServices = platformServices;
         this.kycProfiles = kycProfiles;
+        this.journeyTracker = journeyTracker;
     }
 
     public List<Map<String, Object>> listHubs() {
@@ -601,9 +605,9 @@ public class AdminPlatformService {
             user.put("retailers", jdbc.queryForList("""
                     SELECT u.id, u.full_name, u.mobile, u.code, u.status::text AS status,
                            k.kyc_status::text AS kyc_status, k.bank_status,
-                           k.shop_address->>'city' AS city,
-                           k.shop_address->>'state' AS state,
-                           k.shop_address->>'pincode' AS pincode
+                           COALESCE(k.shop_address->>'city', k.personal_details->'permanentAddress'->>'city', k.personal_details->>'city') AS city,
+                           COALESCE(k.shop_address->>'state', k.personal_details->'permanentAddress'->>'state', k.personal_details->>'state') AS state,
+                           COALESCE(k.shop_address->>'pincode', k.personal_details->'permanentAddress'->>'pincode', k.personal_details->>'pincode') AS pincode
                       FROM users u
                       LEFT JOIN agent_kyc_profiles k ON k.user_id = u.id
                      WHERE u.parent_id = ? AND u.user_type = 'RETAILER'
@@ -727,14 +731,57 @@ public class AdminPlatformService {
                         "The auditor must approve the activation request before this retailer can go live");
             }
         }
+        if ("MASTER_DISTRIBUTOR".equals(type) && "ACTIVE".equals(status)) {
+            String current = jdbc.queryForObject("SELECT status::text FROM users WHERE id = ?", String.class, userId);
+            boolean restoring = "SUSPENDED".equals(current) || "INACTIVE".equals(current);
+            if (!restoring) {
+                List<String> idStatuses = jdbc.queryForList(
+                        "SELECT identity_status FROM agent_kyc_profiles WHERE user_id = ?", String.class, userId);
+                String idStatus = idStatuses.isEmpty() ? "NOT_VERIFIED" : idStatuses.get(0);
+                if (!"VERIFIED".equals(idStatus)) {
+                    throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "IDENTITY_VERIFICATION_REQUIRED",
+                            "Distributor must complete identity verification before being activated");
+                }
+            }
+        }
         int n = userRepository.updateStatus(userId, status);
         if (n == 0) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User does not exist");
+        }
+        if ("ACTIVE".equals(status) && ("RETAILER".equals(type) || "MASTER_DISTRIBUTOR".equals(type))) {
+            journeyTracker.recordUserMilestone(
+                    userId, JourneyTracker.ACTIVATED, "SUCCESS",
+                    Map.of("activatedBy", access.me().userId().toString()));
         }
         if (!UserService.canAuthenticate(type, status)) {
             sessions.revokeAllForUser(userId, "STATUS_CHANGE");
         }
         log.info("USER_STATUS userId={} status={}", userId, status);
+        return getUser(userId);
+    }
+
+    @Transactional
+    public Map<String, Object> requireReverification(UUID userId) {
+        access.assertNetworkUser(userId);
+        String type = jdbc.queryForObject("SELECT user_type::text FROM users WHERE id = ?", String.class, userId);
+        if (!"RETAILER".equals(type) && !"MASTER_DISTRIBUTOR".equals(type)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_USER_TYPE",
+                    "Only retailers and distributors can be required to re-verify");
+        }
+        jdbc.update("""
+                INSERT INTO agent_kyc_profiles (user_id, kyc_status, identity_status, personal_identity_verified, personal_status)
+                VALUES (?, 'PENDING', 'REVERIFY_REQUIRED', FALSE, 'NOT_VERIFIED')
+                ON CONFLICT (user_id) DO UPDATE
+                   SET identity_status = 'REVERIFY_REQUIRED',
+                       personal_identity_verified = FALSE,
+                       personal_status = 'NOT_VERIFIED',
+                       updated_at = now()
+                """, userId);
+        sessions.revokeAllForUser(userId, "ADMIN_REQUIRE_REVERIFY");
+        journeyTracker.recordUserMilestone(
+                userId, "REVERIFY_REQUIRED", "INFO",
+                Map.of("requestedBy", access.me().userId().toString()));
+        log.info("USER_REVERIFY_REQUIRED userId={} by={}", userId, access.me().userId());
         return getUser(userId);
     }
 
@@ -808,51 +855,10 @@ public class AdminPlatformService {
         return Map.of("id", userId, "reset", true);
     }
 
-    /** Puts one finished bank check back on the retailer's KYC page. Onboarding stays complete. */
-    @Transactional
+    /** PaySprint bank eKYC is no longer reopened. Historical rows stay in place. */
     public Map<String, Object> reopenBankEkyc(UUID userId, String bankName) {
-        access.assertNetworkUser(userId);
-        String bank = bankName == null ? "" : bankName.trim().toLowerCase(Locale.ROOT);
-        if (!"bank2".equals(bank) && !"bank6".equals(bank)) {
-            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "UNKNOWN_BANK",
-                    "Choose money transfer or cash out eKYC.");
-        }
-        String type;
-        try {
-            type = jdbc.queryForObject("SELECT user_type::text FROM users WHERE id = ?", String.class, userId);
-        } catch (EmptyResultDataAccessException e) {
-            throw ApiException.of(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User does not exist");
-        }
-        if (!"RETAILER".equals(type)) {
-            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "NOT_A_RETAILER",
-                    "Bank eKYC can be reopened for a retailer.");
-        }
-        int updated = jdbc.update("""
-                UPDATE paysprint_bank_ekyc
-                   SET status = 'PENDING',
-                       completed_at = NULL,
-                       last_message = 'Scan again so this check includes CASA.',
-                       updated_at = now()
-                 WHERE user_id = ? AND bank_name = ? AND status = 'SUCCESS'
-                """, userId, bank);
-        if (updated == 0) {
-            Integer exists = jdbc.queryForObject(
-                    "SELECT count(*)::int FROM paysprint_bank_ekyc WHERE user_id = ? AND bank_name = ?",
-                    Integer.class, userId, bank);
-            if (exists == null || exists == 0) {
-                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "EKYC_NOT_DONE",
-                        "This bank check has not been completed yet.");
-            }
-            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "EKYC_ALREADY_OPEN",
-                    "This bank check is already waiting for a new scan.");
-        }
-        jdbc.update("""
-                UPDATE agent_kyc_profiles
-                   SET bank_status = 'PENDING', updated_at = now()
-                 WHERE user_id = ?
-                """, userId);
-        log.info("MERCHANT_EKYC reopen userId={} pipe={}", userId, bank);
-        return Map.of("id", userId, "bank", bank, "status", "PENDING");
+        throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "SERVICE_REMOVED",
+                "Merchant eKYC has been removed");
     }
 
     @Transactional
@@ -903,6 +909,7 @@ public class AdminPlatformService {
         StringBuilder sql = new StringBuilder("""
                 SELECT k.user_id, u.full_name, u.mobile, u.status::text AS user_status,
                        k.shop_name, k.kyc_status::text AS kyc_status, k.bank_status, k.rejection_reason,
+                       k.personal_status, k.business_status, k.agreement_status,
                        k.aadhaar_last4, k.gstin, k.created_at, k.updated_at,
                        p.full_name AS distributor_name, u.parent_id AS distributor_id
                   FROM agent_kyc_profiles k
@@ -1115,7 +1122,7 @@ public class AdminPlatformService {
                         "USER_CODE_EXHAUSTED", "Could not generate a unique user code");
                 default -> null;
             };
-            String status = "RETAILER".equals(userType) ? "PENDING" : "ACTIVE";
+            String status = "RETAILER".equals(userType) || "MASTER_DISTRIBUTOR".equals(userType) ? "PENDING" : "ACTIVE";
             String mail = email == null || email.isBlank() ? null : email.trim().toLowerCase();
             if ("RETAILER".equals(userType) && (mail == null || !mail.matches("[^@\\s]+@[^@\\s]+\\.[^@\\s]+"))) {
                 throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "EMAIL_REQUIRED",
@@ -1229,11 +1236,19 @@ public class AdminPlatformService {
     private Map<String, Object> loadAgentKyc(UUID userId) {
         List<Map<String, Object>> kyc = jdbc.queryForList("""
                 SELECT shop_name, gstin, kyc_status::text AS kyc_status, bank_status, rejection_reason,
-                       ovd_type, aadhaar_last4, aadhaar_verified_at, pan_verified_at, created_at,
+                       identity_status, identity_verified_at, bank_verification_status,
+                       personal_status, business_status, agreement_status,
+                       COALESCE(personal_identity_verified, FALSE) AS personal_identity_verified,
+                       COALESCE(business_verified, FALSE) AS business_verified,
+                       COALESCE(aadhaar_pan_linked, FALSE) AS aadhaar_pan_linked,
+                       business_reviewed_by, business_reviewed_at, business_review_note,
+                       business_details->>'entityType' AS entity_type,
+                       ovd_type, aadhaar_last4, aadhaar_verified_at, pan_last4, pan_verified_at, created_at,
                        paysprint_onboard_issued_at,
-                       shop_address->>'city' AS city,
-                       shop_address->>'state' AS state,
-                       shop_address->>'pincode' AS pincode
+                       COALESCE(face_review_status, 'PENDING') AS face_review_status,
+                       COALESCE(shop_address->>'city', personal_details->'permanentAddress'->>'city', personal_details->>'city') AS city,
+                       COALESCE(shop_address->>'state', personal_details->'permanentAddress'->>'state', personal_details->>'state') AS state,
+                       COALESCE(shop_address->>'pincode', personal_details->'permanentAddress'->>'pincode', personal_details->>'pincode') AS pincode
                   FROM agent_kyc_profiles WHERE user_id = ?
                 """, userId);
         if (kyc.isEmpty()) {
@@ -1245,6 +1260,12 @@ public class AdminPlatformService {
                   FROM paysprint_bank_ekyc
                  WHERE user_id = ?
                  ORDER BY bank_name
+                """, userId));
+        row.put("locations", jdbc.queryForList("""
+                SELECT DISTINCT ON (step) step, latitude, longitude, created_at
+                  FROM partner_verification_events
+                 WHERE user_id = ?
+                 ORDER BY step, created_at DESC
                 """, userId));
         return row;
     }
@@ -1265,9 +1286,16 @@ public class AdminPlatformService {
                                )
                        ), h.name, '') AS hub_names,
                        k.shop_name, k.kyc_status::text AS kyc_status, k.bank_status,
-                       k.shop_address->>'city' AS retailer_city,
-                       k.shop_address->>'state' AS retailer_state,
-                       k.shop_address->>'pincode' AS retailer_pincode
+                       COALESCE(k.identity_status, 'NOT_VERIFIED') AS identity_status,
+                       COALESCE(k.bank_verification_status, 'NOT_VERIFIED') AS bank_verification_status,
+                       k.personal_status, k.business_status, k.agreement_status,
+                       COALESCE(k.personal_identity_verified, FALSE) AS personal_identity_verified,
+                       COALESCE(k.business_verified, FALSE) AS business_verified,
+                       COALESCE(k.aadhaar_pan_linked, FALSE) AS aadhaar_pan_linked,
+                       COALESCE(k.face_review_status, 'PENDING') AS face_review_status,
+                       COALESCE(k.shop_address->>'city', k.personal_details->'permanentAddress'->>'city', k.personal_details->>'city') AS retailer_city,
+                       COALESCE(k.shop_address->>'state', k.personal_details->'permanentAddress'->>'state', k.personal_details->>'state') AS retailer_state,
+                       COALESCE(k.shop_address->>'pincode', k.personal_details->'permanentAddress'->>'pincode', k.personal_details->>'pincode') AS retailer_pincode
                   FROM users u
                   LEFT JOIN users p ON p.id = u.parent_id
                   LEFT JOIN users c ON c.id = u.created_by

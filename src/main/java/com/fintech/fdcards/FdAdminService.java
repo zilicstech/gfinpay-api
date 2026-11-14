@@ -35,6 +35,7 @@ public class FdAdminService {
         List<Map<String, Object>> providers = jdbc.queryForList("""
                 SELECT code, name, enabled, novu, fallback_rank, commission_txn_type, updated_at
                   FROM fd_providers
+                 WHERE code <> 'PAYSPRINT'
                  ORDER BY fallback_rank, code
                 """);
         Map<String, List<Map<String, Object>>> itemsByProvider = new LinkedHashMap<>();
@@ -73,6 +74,9 @@ public class FdAdminService {
 
     @Transactional
     public Map<String, Object> setProviderEnabled(String code, boolean enabled) {
+        if (enabled && FdProviderGate.PAYSPRINT.equalsIgnoreCase(code)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "SERVICE_REMOVED", "PaySprint FD cards have been removed");
+        }
         int n = providers.updateEnabled(code, enabled);
         if (n == 0) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "PROVIDER_NOT_FOUND", "FD provider not found");
@@ -108,12 +112,21 @@ public class FdAdminService {
                   FROM catalog_items i
                   JOIN fd_providers p ON p.code = i.provider
                  WHERE i.category_code = 'FD_CARD'
+                   AND i.provider <> 'PAYSPRINT'
                  ORDER BY i.sort_order, i.name
                 """);
     }
 
     @Transactional
     public Map<String, Object> updateFdCard(String code, String applyUrl, Boolean active) {
+        List<Map<String, Object>> existing = jdbc.queryForList(
+                "SELECT provider FROM catalog_items WHERE code = ? AND category_code = 'FD_CARD'", code);
+        if (existing.isEmpty()) {
+            throw ApiException.of(HttpStatus.NOT_FOUND, "CARD_NOT_FOUND", "FD card not found");
+        }
+        if (FdProviderGate.PAYSPRINT.equals(String.valueOf(existing.get(0).get("provider")))) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "SERVICE_REMOVED", "PaySprint FD cards have been removed");
+        }
         if (applyUrl != null) {
             jdbc.update("UPDATE catalog_items SET apply_url = ? WHERE code = ? AND category_code = 'FD_CARD'",
                     applyUrl.isBlank() ? null : applyUrl, code);

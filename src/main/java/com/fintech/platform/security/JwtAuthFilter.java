@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -60,20 +61,36 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     return;
                 }
                 String name = claims.get("name", String.class);
+                String claimScope = claims.get("scope", String.class);
+                String effectiveScope = (ctx.reverifyRequired() || JwtService.SCOPE_REVERIFY.equals(claimScope))
+                        ? JwtService.SCOPE_REVERIFY
+                        : JwtService.SCOPE_FULL;
 
-                List<SimpleGrantedAuthority> authorities = new ArrayList<>();
-                authorities.add(new SimpleGrantedAuthority("ROLE_" + ctx.userType()));
-                ctx.permissions().forEach(p -> authorities.add(new SimpleGrantedAuthority(p)));
-                AuthPrincipal principal = new AuthPrincipal(userId, name, ctx.userType(), sessionId);
-                UsernamePasswordAuthenticationToken auth =
-                        new UsernamePasswordAuthenticationToken(principal, null, authorities);
-                SecurityContextHolder.getContext().setAuthentication(auth);
-                if (ctx.isPendingActivation() && !pendingRetailerPath(request.getRequestURI())) {
-                    log.warn("JWT pending retailer blocked path={} user={}", request.getRequestURI(), userId);
+                if (JwtService.SCOPE_REVERIFY.equals(effectiveScope) && !reverifyAllowedPath(request.getRequestURI())) {
+                    log.warn("JWT reverify-scoped user blocked path={} user={}", request.getRequestURI(), userId);
+                    SecurityContextHolder.clearContext();
+                    response.setStatus(HttpStatus.FORBIDDEN.value());
+                    response.setContentType("application/json");
+                    response.getWriter().write("{\"data\":null,\"error\":{\"code\":\"REVERIFY_REQUIRED\","
+                            + "\"message\":\"Complete identity re-verification to access services\","
+                            + "\"details\":null,\"retriable\":false},\"meta\":null}");
+                    return;
+                }
+
+                if (ctx.isPendingActivation() && !pendingPartnerPath(request.getRequestURI())) {
+                    log.warn("JWT pending partner blocked path={} user={}", request.getRequestURI(), userId);
                     SecurityContextHolder.clearContext();
                     chain.doFilter(request, response);
                     return;
                 }
+
+                List<SimpleGrantedAuthority> authorities = new ArrayList<>();
+                authorities.add(new SimpleGrantedAuthority("ROLE_" + ctx.userType()));
+                ctx.permissions().forEach(p -> authorities.add(new SimpleGrantedAuthority(p)));
+                AuthPrincipal principal = new AuthPrincipal(userId, name, ctx.userType(), sessionId, effectiveScope);
+                UsernamePasswordAuthenticationToken auth =
+                        new UsernamePasswordAuthenticationToken(principal, null, authorities);
+                SecurityContextHolder.getContext().setAuthentication(auth);
             } catch (Exception e) {
                 log.warn("JWT rejected: {}", e.getMessage());
                 SecurityContextHolder.clearContext();
@@ -94,13 +111,30 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         }
     }
 
-    private static boolean pendingRetailerPath(String path) {
+    private static boolean reverifyAllowedPath(String path) {
+        if (path == null) {
+            return false;
+        }
+        return path.equals("/api/v1/me")
+                || path.startsWith("/api/v1/me/")
+                || path.equals("/api/v1/reverify")
+                || path.startsWith("/api/v1/reverify/")
+                || path.equals("/api/v1/auth")
+                || path.startsWith("/api/v1/auth/");
+    }
+
+    private static boolean pendingPartnerPath(String path) {
         if (path == null) {
             return false;
         }
         return path.equals("/api/v1/me")
                 || path.startsWith("/api/v1/me/")
                 || path.equals("/api/v1/finance")
-                || path.startsWith("/api/v1/finance/");
+                || path.startsWith("/api/v1/finance/")
+                || path.equals("/api/v1/verification")
+                || path.equals("/api/v1/reverify")
+                || path.startsWith("/api/v1/reverify/")
+                || path.equals("/api/v1/auth")
+                || path.startsWith("/api/v1/auth/");
     }
 }

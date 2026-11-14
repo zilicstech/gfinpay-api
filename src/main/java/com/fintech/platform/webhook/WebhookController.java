@@ -51,6 +51,9 @@ public class WebhookController {
     public ApiResponse<Map<String, String>> receive(@PathVariable String provider,
                                                     @RequestHeader(value = "X-Webhook-Signature", required = false) String signature,
                                                     @RequestBody String rawBody) throws Exception {
+        if ("paysprint".equalsIgnoreCase(provider)) {
+            throw ApiException.of(HttpStatus.NOT_FOUND, "NOT_FOUND", "This callback has been removed");
+        }
         if (!signer.verify(rawBody, signature)) {
             callbacks.record(provider, provider, null, null, null, null, "REJECTED", "invalid_signature");
             throw ApiException.of(HttpStatus.UNAUTHORIZED, "WEBHOOK_SIGNATURE_INVALID",

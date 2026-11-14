@@ -6,8 +6,10 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -39,6 +41,7 @@ public class SpacesStorage {
     private final SpacesProperties props;
     private final S3Client s3;
     private final S3Presigner presigner;
+    private final Map<String, byte[]> localStore = new ConcurrentHashMap<>();
 
     public SpacesStorage(SpacesProperties props) {
         this.props = props;
@@ -69,7 +72,6 @@ public class SpacesStorage {
     public record StoredObject(String key, String filename, String contentType) {}
 
     public StoredObject upload(String kind, MultipartFile file) {
-        requireConfigured();
         if (file == null || file.isEmpty()) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "PROOF_REQUIRED",
                     "Upload a payment proof (PDF or image)");
@@ -92,12 +94,16 @@ public class SpacesStorage {
         String folder = StringUtils.hasText(props.prefix()) ? props.prefix().replaceAll("^/+|/+$", "") : "dev";
         String key = folder + "/" + day + "/" + kind.toLowerCase(Locale.ROOT) + "/" + UUID.randomUUID() + "-" + safe;
         try {
-            s3.putObject(PutObjectRequest.builder()
-                    .bucket(props.bucket())
-                    .key(key)
-                    .contentType(contentType)
-                    .contentLength(file.getSize())
-                    .build(), RequestBody.fromInputStream(file.getInputStream(), file.getSize()));
+            if (s3 == null) {
+                localStore.put(key, file.getBytes());
+            } else {
+                s3.putObject(PutObjectRequest.builder()
+                        .bucket(props.bucket())
+                        .key(key)
+                        .contentType(contentType)
+                        .contentLength(file.getSize())
+                        .build(), RequestBody.fromInputStream(file.getInputStream(), file.getSize()));
+            }
         } catch (Exception e) {
             log.error("SPACES_UPLOAD_FAILED key={}", key, e);
             throw ApiException.of(HttpStatus.BAD_GATEWAY, "PROOF_UPLOAD_FAILED",
@@ -107,10 +113,73 @@ public class SpacesStorage {
         return new StoredObject(key, original, contentType);
     }
 
+    public StoredObject uploadBytes(String kind, String filename, String contentType, byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "DOCUMENT_EMPTY",
+                    "Document payload is empty");
+        }
+        String normType = normalizeType(contentType);
+        String original = (filename == null || filename.isBlank()) ? "document.bin" : filename;
+        String safe = original.replaceAll("[^A-Za-z0-9._/-]", "_").replaceAll("^/+|/+$", "");
+        if (safe.isBlank()) {
+            safe = "document.bin";
+        }
+        String day = LocalDate.now(IST).toString();
+        String folder = StringUtils.hasText(props.prefix()) ? props.prefix().replaceAll("^/+|/+$", "") : "dev";
+        String key = folder + "/" + day + "/" + kind.toLowerCase(Locale.ROOT) + "/" + UUID.randomUUID() + "-" + safe;
+        try {
+            if (s3 == null) {
+                localStore.put(key, bytes.clone());
+            } else {
+                s3.putObject(PutObjectRequest.builder()
+                        .bucket(props.bucket())
+                        .key(key)
+                        .contentType(normType)
+                        .contentLength((long) bytes.length)
+                        .build(), RequestBody.fromBytes(bytes));
+            }
+        } catch (Exception e) {
+            log.error("SPACES_UPLOAD_BYTES_FAILED key={}", key, e);
+            throw ApiException.of(HttpStatus.BAD_GATEWAY, "DOCUMENT_UPLOAD_FAILED",
+                    "Could not store the document in cloud storage.");
+        }
+        log.info("SPACES_UPLOAD key={} bytes={}", key, bytes.length);
+        return new StoredObject(key, original, normType);
+    }
+
+    public byte[] getBytes(String key) {
+        if (!StringUtils.hasText(key)) {
+            throw ApiException.of(HttpStatus.NOT_FOUND, "DOCUMENT_NOT_FOUND", "Document storage key is missing");
+        }
+        if (s3 == null) {
+            byte[] data = localStore.get(key);
+            if (data == null) {
+                throw ApiException.of(HttpStatus.NOT_FOUND, "DOCUMENT_NOT_FOUND", "Document not found in local store");
+            }
+            return data.clone();
+        }
+        try {
+            return s3.getObjectAsBytes(GetObjectRequest.builder()
+                    .bucket(props.bucket())
+                    .key(key)
+                    .build()).asByteArray();
+        } catch (Exception e) {
+            log.error("SPACES_GET_BYTES_FAILED key={}", key, e);
+            throw ApiException.of(HttpStatus.BAD_GATEWAY, "DOCUMENT_READ_FAILED",
+                    "Could not read document from cloud storage.");
+        }
+    }
+
+    public boolean isConfigured() {
+        return true;
+    }
+
     public String presignedGet(String key) {
-        requireConfigured();
         if (!StringUtils.hasText(key)) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "PROOF_NOT_FOUND", "No payment proof on this request");
+        }
+        if (presigner == null) {
+            return "/local-spaces/" + key;
         }
         GetObjectRequest get = GetObjectRequest.builder().bucket(props.bucket()).key(key).build();
         return presigner.presignGetObject(GetObjectPresignRequest.builder()

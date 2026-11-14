@@ -93,19 +93,49 @@ public final class ActivityPhrases {
             Map.entry("retailer.cashout.dispense", "Cash Given"),
             Map.entry("retailer.cashout.start", "Cash Out Started"),
             Map.entry("profile.update", "Profile Updated"),
-            Map.entry("profile.password", "Password Changed")
+            Map.entry("profile.password", "Password Changed"),
+            Map.entry("profile.pin", "Security PIN Changed"),
+            Map.entry("Encrypted Aadhaar Saved", "Aadhaar Verified")
     );
 
     private ActivityPhrases() {}
 
     public static String display(String stored, String subjectUserType) {
-        if (stored == null || stored.isBlank()) {
-            return "Activity";
+        return display(stored, null, null, subjectUserType);
+    }
+
+    public static String display(String stored, String httpMethod, String httpPath, String subjectUserType) {
+        String candidate = stored == null ? "" : stored.trim();
+        if (candidate.isEmpty()) {
+            if (httpPath != null && !httpPath.isBlank()) {
+                candidate = ActivityActions.action(httpMethod, httpPath);
+            } else {
+                return "Activity";
+            }
+        } else if (looksLikeRawApiAction(candidate)) {
+            if (httpPath != null && !httpPath.isBlank()) {
+                candidate = ActivityActions.action(httpMethod, httpPath);
+            } else {
+                int space = candidate.indexOf(' ');
+                String method = space > 0 ? candidate.substring(0, space) : "POST";
+                String rawPath = (space > 0 ? candidate.substring(space + 1) : candidate)
+                        .replace("{id}", "00000000-0000-0000-0000-000000000000");
+                candidate = ActivityActions.action(method, rawPath);
+            }
         }
-        if ("admin.user.status".equals(stored) || "Status Change".equals(stored)) {
+        if ("admin.user.status".equals(candidate) || "Status Change".equals(candidate)) {
             return statusChange(subjectUserType);
         }
-        return LEGACY.getOrDefault(stored, stored);
+        return LEGACY.getOrDefault(candidate, candidate);
+    }
+
+    private static boolean looksLikeRawApiAction(String value) {
+        return value.startsWith("POST ")
+                || value.startsWith("PUT ")
+                || value.startsWith("PATCH ")
+                || value.startsWith("DELETE ")
+                || value.startsWith("/api/")
+                || value.startsWith("api/");
     }
 
     public static String statusChange(String userType) {
@@ -154,6 +184,23 @@ public final class ActivityPhrases {
     }
 
     public static boolean isLogin(String action) {
-        return USER_LOGIN.equals(action) || "auth.login".equals(action);
+        return USER_LOGIN.equals(action)
+                || "User OTP Login".equals(action)
+                || "auth.login".equals(action);
+    }
+
+    public static boolean isUnauthenticatedAuthRoute(String method, String path) {
+        if (!"POST".equalsIgnoreCase(method) || path == null) {
+            return false;
+        }
+        return switch (path) {
+            case "/api/v1/auth/login",
+                 "/api/v1/auth/otp/send",
+                 "/api/v1/auth/otp/verify",
+                 "/api/v1/auth/reset/otp",
+                 "/api/v1/auth/reset/verify",
+                 "/api/v1/auth/reset/confirm" -> true;
+            default -> false;
+        };
     }
 }

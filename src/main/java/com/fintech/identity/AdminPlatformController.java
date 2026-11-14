@@ -108,17 +108,17 @@ public class AdminPlatformController {
     private final AdminPlatformService admin;
     private final FdSalesReconService fdRecon;
     private final AdminEarningsService earnings;
-    private final RetailerPaysprintEkycService paysprintEkyc;
     private final ActivityQueryService activity;
+    private final com.fintech.ledger.TransactionStatusVerificationService statusVerification;
 
     public AdminPlatformController(AdminPlatformService admin, FdSalesReconService fdRecon,
-                                   AdminEarningsService earnings, RetailerPaysprintEkycService paysprintEkyc,
-                                   ActivityQueryService activity) {
+                                   AdminEarningsService earnings, ActivityQueryService activity,
+                                   com.fintech.ledger.TransactionStatusVerificationService statusVerification) {
         this.admin = admin;
         this.fdRecon = fdRecon;
         this.earnings = earnings;
-        this.paysprintEkyc = paysprintEkyc;
         this.activity = activity;
+        this.statusVerification = statusVerification;
     }
 
     @GetMapping("/activity")
@@ -233,29 +233,6 @@ public class AdminPlatformController {
         return ApiResponse.ok(admin.getUser(id));
     }
 
-    @PostMapping("/users/{id}/paysprint-onboard")
-    @PreAuthorize("hasAuthority('users.onboard')")
-    public ApiResponse<Map<String, Object>> paysprintOnboard(@PathVariable UUID id,
-                                                             @RequestBody(required = false) Map<String, String> body) {
-        admin.getUser(id);
-        String email = body == null ? null : body.get("email");
-        return ApiResponse.ok(paysprintEkyc.issue(id, email));
-    }
-
-    @PostMapping("/users/{id}/paysprint-onboard/status")
-    @PreAuthorize("hasAuthority('users.onboard')")
-    public ApiResponse<Map<String, Object>> paysprintOnboardStatus(@PathVariable UUID id) {
-        admin.getUser(id);
-        return ApiResponse.ok(paysprintEkyc.checkStatus(id));
-    }
-
-    @PostMapping("/users/{id}/paysprint-onboard/refresh")
-    @PreAuthorize("hasAuthority('users.onboard')")
-    public ApiResponse<Map<String, Object>> paysprintOnboardRefresh(@PathVariable UUID id) {
-        admin.getUser(id);
-        return ApiResponse.ok(paysprintEkyc.refreshOnboardUrl(id));
-    }
-
     @PostMapping("/users/distributors")
     @PreAuthorize("hasAuthority('users.onboard')")
     public ApiResponse<Map<String, Object>> createDistributor(@AuthenticationPrincipal AuthPrincipal me,
@@ -297,6 +274,12 @@ public class AdminPlatformController {
     @PreAuthorize("hasAuthority('users.onboard')")
     public ApiResponse<Map<String, Object>> status(@PathVariable UUID id, @Valid @RequestBody StatusRequest req) {
         return ApiResponse.ok(admin.updateStatus(id, req.status()));
+    }
+
+    @PostMapping("/users/{id}/require-reverification")
+    @PreAuthorize("hasAuthority('users.onboard')")
+    public ApiResponse<Map<String, Object>> requireReverification(@PathVariable UUID id) {
+        return ApiResponse.ok(admin.requireReverification(id));
     }
 
     @PatchMapping("/users/{id}/hub")
@@ -355,13 +338,13 @@ public class AdminPlatformController {
     }
 
     @GetMapping("/earnings/filters")
-    @PreAuthorize("hasAuthority('reports.view')")
+    @PreAuthorize("hasAnyAuthority('users.onboard','finance.review','settings.manage')")
     public ApiResponse<Map<String, Object>> earningsFilters() {
         return ApiResponse.ok(earnings.filters());
     }
 
     @GetMapping("/earnings")
-    @PreAuthorize("hasAuthority('reports.view')")
+    @PreAuthorize("hasAnyAuthority('users.onboard','finance.review','settings.manage')")
     public ApiResponse<Map<String, Object>> earningsQuery(
             @RequestParam(required = false) String from,
             @RequestParam(required = false) String to,
@@ -374,13 +357,13 @@ public class AdminPlatformController {
     }
 
     @GetMapping("/transactions/types")
-    @PreAuthorize("hasAuthority('reports.view')")
+    @PreAuthorize("hasAnyAuthority('users.onboard','finance.review','settings.manage')")
     public ApiResponse<List<Map<String, String>>> txnTypes() {
         return ApiResponse.ok(admin.transactionTypes());
     }
 
     @GetMapping("/transactions")
-    @PreAuthorize("hasAuthority('reports.view')")
+    @PreAuthorize("hasAnyAuthority('users.onboard','finance.review','settings.manage')")
     public ApiResponse<List<Map<String, Object>>> txns(
             @RequestParam(required = false) String txnType,
             @RequestParam String from,
@@ -389,9 +372,15 @@ public class AdminPlatformController {
     }
 
     @GetMapping("/transactions/{id}")
-    @PreAuthorize("hasAuthority('reports.view')")
+    @PreAuthorize("hasAnyAuthority('users.onboard','finance.review','settings.manage')")
     public ApiResponse<Map<String, Object>> txn(@PathVariable UUID id) {
         return ApiResponse.ok(admin.getTransaction(id));
+    }
+
+    @PostMapping("/transactions/{id}/verify-status")
+    @PreAuthorize("hasAnyAuthority('users.onboard','finance.review','settings.manage')")
+    public ApiResponse<Map<String, Object>> verifyTxnStatus(@PathVariable UUID id) {
+        return ApiResponse.ok(statusVerification.verifyForAdmin(id));
     }
 
     @GetMapping("/recon")

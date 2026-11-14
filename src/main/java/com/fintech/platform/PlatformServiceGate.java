@@ -18,6 +18,7 @@ public class PlatformServiceGate {
     public static final String BBPS = "BBPS";
     public static final String LEAD_GEN = "LEAD_GEN";
     public static final String HOSPI_CASH = "HOSPI_CASH";
+    public static final String PAYOUT = "PAYOUT";
     public static final Set<String> LEAD_CATEGORIES = Set.of(
             "CREDIT_CARD", "INSTANT_LOAN", "PERSONAL_LOAN", "BUSINESS_LOAN", "SAVINGS");
 

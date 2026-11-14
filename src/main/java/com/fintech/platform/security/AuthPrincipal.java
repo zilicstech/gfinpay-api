@@ -3,7 +3,16 @@ package com.fintech.platform.security;
 import java.util.UUID;
 
 /** Authenticated caller extracted from the JWT, bound to the session row that issued it. */
-public record AuthPrincipal(UUID userId, String name, String userType, UUID sessionId) {
+public record AuthPrincipal(UUID userId, String name, String userType, UUID sessionId, String scope) {
+
+    public AuthPrincipal(UUID userId, String name, String userType, UUID sessionId) {
+        this(userId, name, userType, sessionId, JwtService.SCOPE_FULL);
+    }
+
+    public boolean reverifyOnly() {
+        return JwtService.SCOPE_REVERIFY.equals(scope);
+    }
+
     public boolean superAdmin() {
         return "SUPER_ADMIN".equals(userType);
     }

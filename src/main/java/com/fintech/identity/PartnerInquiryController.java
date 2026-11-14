@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -105,5 +105,15 @@ public class PartnerInquiryController {
                                                             @PathVariable UUID id,
                                                             @Valid @RequestBody ConvertRetailerRequest req) {
         return ApiResponse.ok(inquiries.convertRetailer(me, id, req.password(), req.city(), req.state(), req.pincode()));
+    }
+
+    @PostMapping("/api/v1/desk/inquiries/{id}/invite-retailer")
+    @PreAuthorize("hasAuthority('outlets.manage')")
+    public ApiResponse<Map<String, Object>> inviteRetailer(
+            @AuthenticationPrincipal AuthPrincipal me,
+            @PathVariable UUID id,
+            @RequestHeader(value = "X-Forwarded-For", required = false) String ip,
+            @RequestHeader(value = "User-Agent", required = false) String userAgent) {
+        return ApiResponse.ok(inquiries.sendRetailerInvite(me, id, ip, userAgent));
     }
 }

@@ -19,6 +19,7 @@ public final class AdminTxnTypes {
             new Group("DMT", "DMT Transactions", List.of("DMT")),
             new Group("CASHOUT_UPI", "UPI to Cash transactions", List.of("CASHOUT_UPI")),
             new Group("CASHOUT_AEPS", "Aadhaar cash transactions", List.of("CASHOUT_AEPS")),
+            new Group("PAYOUT", "Payout transactions", List.of("PAYOUT")),
             new Group("BBPS", "Bill pay transactions", List.of("BBPS", "RECHARGE", "DTH", "FASTAG", "LIC")));
 
     private static final Map<String, Group> BY_CODE;

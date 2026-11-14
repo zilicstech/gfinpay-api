@@ -217,16 +217,16 @@ public class VendorService {
         if (!"ACTIVE".equals(row.get("vendor_status"))) {
             throw ApiException.of(HttpStatus.GONE, "VENDOR_INACTIVE", "This URL is not active");
         }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("vendor_name", row.get("vendor_name"));
+        out.put("employee_name", row.get("employee_name"));
+        out.put("employee_gfin_code", row.get("employee_gfin_code"));
         List<Map<String, Object>> products = jdbc.queryForList("""
                 SELECT id, code, name, product_key
                   FROM catalog_items
                  WHERE category_code = 'FD_CARD' AND provider = 'ZET' AND active = TRUE
                  ORDER BY sort_order
                 """);
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("vendor_name", row.get("vendor_name"));
-        out.put("employee_name", row.get("employee_name"));
-        out.put("employee_gfin_code", row.get("employee_gfin_code"));
         out.put("products", products);
         List<Map<String, Object>> hospi = jdbc.queryForList(
                 "SELECT enabled FROM platform_services WHERE code = 'HOSPI_CASH'");
@@ -325,7 +325,7 @@ public class VendorService {
                 String.valueOf(row.get("employee_code")),
                 String.valueOf(row.get("employee_name")),
                 row.get("hub_name") == null ? "—" : String.valueOf(row.get("hub_name")),
-                String.valueOf(row.get("product_key")));
+                String.valueOf(row.get("product_code") == null ? row.get("product_key") : row.get("product_code")));
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("url", applyUrl);
         out.put("tracking_ref", trackingRef.toString());

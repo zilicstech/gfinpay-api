@@ -7,6 +7,7 @@ import com.fintech.ledger.WalletService;
 import com.fintech.platform.PlatformServiceGate;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiException;
+import com.fintech.verification.VerificationGate;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -65,10 +66,12 @@ public class HospiCashService {
     private final WalletService walletService;
     private final TransactionService transactionService;
     private final TransactionTemplate tx;
+    private final VerificationGate verification;
 
     public HospiCashService(JdbcTemplate jdbc, PlatformServiceGate services, ServiceSettlement settlement,
                             CommissionEngine commissionEngine, WalletService walletService,
-                            TransactionService transactionService, PlatformTransactionManager transactions) {
+                            TransactionService transactionService, PlatformTransactionManager transactions,
+                            VerificationGate verification) {
         this.jdbc = jdbc;
         this.services = services;
         this.settlement = settlement;
@@ -76,11 +79,13 @@ public class HospiCashService {
         this.walletService = walletService;
         this.transactionService = transactionService;
         this.tx = new TransactionTemplate(transactions);
+        this.verification = verification;
     }
 
     @Transactional
     public Map<String, Object> sell(AuthPrincipal me, Capture capture) {
         requireRetailer(me);
+        verification.requireIdentity(me.userId());
         services.requireEnabled(PlatformServiceGate.HOSPI_CASH);
         Fields fields = fields(capture);
         if (openRetailerSale(me.userId(), fields.mobile())) {

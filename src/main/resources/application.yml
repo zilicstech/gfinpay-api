@@ -58,6 +58,43 @@ app:
   self-base-url: ${APP_SELF_BASE_URL}
   otp:
     demo: false
+  sms:
+    provider: ${APP_SMS_PROVIDER:mock}
+    r2win:
+      base-url: ${APP_SMS_R2WIN_BASE_URL:https://smsapi.r2win.com}
+      access-key: ${APP_SMS_R2WIN_ACCESS_KEY:}
+      header: ${APP_SMS_R2WIN_HEADER:GFINPY}
+      otp-template-id: ${APP_SMS_R2WIN_OTP_TEMPLATE_ID:1077291870062568175}
+      otp-template-text: ${APP_SMS_R2WIN_OTP_TEMPLATE_TEXT:Dear User, <VAR1> is your One-Time Password (OTP) to access your account. Valid for <VAR2> mins. Do not share it with anyone. Team GFinPay}
+  surepass:
+    mode: ${APP_SUREPASS_MODE:live}
+    base-url: ${APP_SUREPASS_BASE_URL:https://kyc-api.surepass.app}
+    api-token: ${APP_SUREPASS_TOKEN:}
+    digilocker:
+      gateway: ${APP_SUREPASS_DIGILOCKER_GATEWAY:production}
+      signup-flow: ${APP_SUREPASS_DIGILOCKER_SIGNUP_FLOW:true}
+      verify-phone: ${APP_SUREPASS_DIGILOCKER_VERIFY_PHONE:false}
+      skip-main-screen: ${APP_SUREPASS_DIGILOCKER_SKIP_MAIN_SCREEN:false}
+      expiry-minutes: ${APP_SUREPASS_DIGILOCKER_EXPIRY_MINUTES:10}
+      webhook-url: ${APP_SUREPASS_DIGILOCKER_WEBHOOK_URL:}
+  agreement:
+    enforce: ${APP_AGREEMENT_ENFORCE:true}
+    default-onboarding-fee: ${APP_AGREEMENT_DEFAULT_ONBOARDING_FEE:0}
+  esign:
+    mode: ${APP_ESIGN_MODE:${APP_SUREPASS_MODE:live}}
+    base-url: ${APP_ESIGN_BASE_URL:${APP_SUREPASS_BASE_URL:https://kyc-api.surepass.app}}
+    api-token: ${APP_ESIGN_TOKEN:${APP_SUREPASS_TOKEN:}}
+    redirect-url: ${APP_ESIGN_REDIRECT_URL:${APP_PUBLIC_APP_URL:http://localhost:3001}/esign/return}
+    sign-all-pages: ${APP_ESIGN_SIGN_ALL_PAGES:true}
+    name-match-score: ${APP_ESIGN_NAME_MATCH_SCORE:70}
+    status-check-throttle-seconds: ${APP_ESIGN_STATUS_CHECK_THROTTLE_SECONDS:20}
+    session-ttl-hours: ${APP_ESIGN_SESSION_TTL_HOURS:24}
+  pii:
+    key: ${APP_PII_KEY:dev-pii-key-32-bytes-minimum-key!}
+  onboarding:
+    otp-secret: ${APP_OTP_SECRET:dev-otp-hmac-secret-key-for-local}
+    invite-ttl-days: ${APP_ONBOARDING_INVITE_TTL_DAYS:7}
+    session-ttl-minutes: ${APP_ONBOARDING_SESSION_TTL_MINUTES:60}
   bootstrap:
     admin:
       code: ${BOOTSTRAP_ADMIN_CODE}
@@ -69,26 +106,26 @@ app:
     allow-all-origins: ${APP_CORS_ALLOW_ALL_ORIGINS:false}
     allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:}
   public-app-url: ${APP_PUBLIC_APP_URL}
-  paysprint:
-    base-url: ${APP_PAYSPRINT_BASE_URL}
-    partner-id: ${APP_PAYSPRINT_PARTNER_ID}
-    merchant-code: ${PAYSPRINT_MERCHANT_CODE}
-    jwt-key: ${PAYSPRINT_JWT_KEY}
-    authorised-key: ${PAYSPRINT_AUTHORISED_KEY}
-    aes-key: ${PAYSPRINT_AES_KEY}
-    aes-iv: ${PAYSPRINT_AES_IV}
-    jwt-product: FIXED_DEPOSIT
-    fd-card-type: ${PAYSPRINT_FD_CARD_TYPE:1}
-    callback-enabled: true
-    callback-secret: ${PAYSPRINT_CALLBACK_SECRET}
-    wadh-bank2: ${PAYSPRINT_WADH_BANK2:18f4CEiXeXcfGXvgWA/blxD+w2pw7hfQPY45JMytkPw=}
-    wadh-bank6: ${PAYSPRINT_WADH_BANK6:E0jzJ/P8UopUHAieZn8CKqS4WPMi5ZSYXgfnlfkWjrc=}
-    rd-env: ${PAYSPRINT_RD_ENV:P}
-    is-casa: ${PAYSPRINT_IS_CASA:1}
-    allow-pasted-pid: ${PAYSPRINT_ALLOW_PASTED_PID:false}
   kbill:
     base-url: ${APP_KBILL_BASE_URL:}
     api-token: ${APP_KBILL_API_TOKEN:}
+  emerald:
+    base-url: ${APP_EMERALD_BASE_URL:https://myemerald.in}
+    client-id: ${APP_EMERALD_CLIENT_ID:}
+    client-secret: ${APP_EMERALD_CLIENT_SECRET:}
+    entity-code: ${APP_EMERALD_ENTITY_CODE:ENT000002}
+    default-pipe: ${APP_EMERALD_DEFAULT_PIPE:INSTANTPAY}
+    callback-secret: ${APP_EMERALD_CALLBACK_SECRET:}
+    aeps-transact-path: ${APP_EMERALD_AEPS_TRANSACT_PATH:}
+    payout-status-path: ${APP_EMERALD_PAYOUT_STATUS_PATH:}
+    log-payloads: ${APP_EMERALD_LOG_PAYLOADS:true}
+    mask-account-numbers: ${APP_EMERALD_MASK_ACCOUNT_NUMBERS:true}
+  biometric:
+    rd-env: ${APP_BIOMETRIC_RD_ENV:P}
+    allow-pasted-pid: ${APP_BIOMETRIC_ALLOW_PASTED_PID:false}
+  payout:
+    min-cashout-txns: ${APP_PAYOUT_MIN_CASHOUT_TXNS:7}
+    cashout-recency-days: ${APP_PAYOUT_CASHOUT_RECENCY_DAYS:7}
   spaces:
     endpoint: ${APP_SPACES_ENDPOINT:https://sgp1.digitaloceanspaces.com}
     region: ${APP_SPACES_REGION:sgp1}

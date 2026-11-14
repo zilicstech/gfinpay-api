@@ -8,14 +8,10 @@ import com.fintech.fdcards.FdProviderGate;
 import com.fintech.identity.AdminAccess;
 import com.fintech.ledger.TransactionService;
 import com.fintech.ledger.WalletService;
-import com.fintech.paysprint.PaysprintFdClient;
-import com.fintech.paysprint.PaysprintLeadClient;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
-import com.fintech.paysprint.PaysprintUtmOutcome;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fintech.platform.PlatformServiceGate;
 import com.fintech.platform.security.AuthPrincipal;
+import com.fintech.verification.VerificationGate;
 import com.fintech.platform.web.ApiException;
 import com.fintech.platform.web.PublicAppUrl;
 import java.math.BigDecimal;
@@ -73,8 +69,6 @@ public class SalesLeadService {
             """;
 
     private final JdbcTemplate jdbc;
-    private final PaysprintLeadClient leadClient;
-    private final PaysprintFdClient fdClient;
     private final ProductEligibilityService eligibility;
     private final PlatformServiceGate services;
     private final FdLinkRouter fdLinkRouter;
@@ -86,11 +80,10 @@ public class SalesLeadService {
     private final SaleNetworkSnapshot snapshot;
     private final AdminAccess access;
     private final CustomerService customers;
+    private final VerificationGate verification;
     private final String publicAppUrl;
 
     public SalesLeadService(JdbcTemplate jdbc,
-                            PaysprintLeadClient leadClient,
-                            PaysprintFdClient fdClient,
                             ProductEligibilityService eligibility,
                             PlatformServiceGate services,
                             FdLinkRouter fdLinkRouter,
@@ -102,10 +95,9 @@ public class SalesLeadService {
                             SaleNetworkSnapshot snapshot,
                             AdminAccess access,
                             CustomerService customers,
+                            VerificationGate verification,
                             @Value("${app.public-app-url}") String publicAppUrl) {
         this.jdbc = jdbc;
-        this.leadClient = leadClient;
-        this.fdClient = fdClient;
         this.eligibility = eligibility;
         this.services = services;
         this.fdLinkRouter = fdLinkRouter;
@@ -117,6 +109,7 @@ public class SalesLeadService {
         this.snapshot = snapshot;
         this.access = access;
         this.customers = customers;
+        this.verification = verification;
         this.publicAppUrl = PublicAppUrl.canonicalOrigin(publicAppUrl);
     }
 
@@ -158,7 +151,7 @@ public class SalesLeadService {
     @Transactional
     public Map<String, Object> create(AuthPrincipal me, UUID customerId, UUID catalogItemId, BigDecimal budget) {
         CustomerService.requireSalesDesk(me);
-        requireCatalogItemService(catalogItemId);
+        requireCatalogItemService(me, catalogItemId);
         eligibility.requireEligible(me, customerId, catalogItemId, budget);
         Map<String, Object> customer = customers.get(me, customerId);
         requireEmailForPaysprintLead(catalogItemId, customer);
@@ -248,24 +241,8 @@ public class SalesLeadService {
             encdata = journey.encdata();
             method = journey.method();
         } else {
-            PaysprintLeadClient.Journey journey = leadClient.generate(
-                    refid,
-                    String.valueOf(lead.get("customer_name")),
-                    String.valueOf(lead.get("customer_mobile")),
-                    lead.get("customer_email") == null ? "" : String.valueOf(lead.get("customer_email")),
-                    String.valueOf(lead.get("external_product")),
-                    redirect);
-            url = journey.url();
-            encdata = journey.encdata();
-            if (url == null || url.isBlank()) {
-                throw ApiException.of(HttpStatus.BAD_GATEWAY, "PAYSPRINT_LEAD_ERROR",
-                        "PaySprint did not return a journey URL");
-            }
-            if (encdata != null && !encdata.isBlank() && !url.contains("encdata=")) {
-                url = url + (url.contains("?") ? "&" : "?") + "encdata="
-                        + URLEncoder.encode(encdata, StandardCharsets.UTF_8);
-            }
-            method = "GET";
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "SERVICE_REMOVED",
+                    "This lead provider has been removed");
         }
         jdbc.update("""
                 UPDATE sales_leads
@@ -286,24 +263,8 @@ public class SalesLeadService {
             throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
         }
         Map<String, Object> lead = get(me, id);
-        if (!isPaysprintFd(lead) && !isPaysprintLead(lead)) {
-            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "NOT_PAYSPRINT_LEAD",
-                    "Status check is only for PaySprint sales");
-        }
-        String refid = String.valueOf(lead.get("provider_refid"));
-        JsonNode data = isPaysprintFd(lead) ? fdClient.statusCheck(refid) : leadClient.status(refid);
-        String note = PaysprintUtmOutcome.summary(data);
-        if (PaysprintUtmOutcome.converted(data)) {
-            applyOutcome(refid, true, "STATUS_CHECK: " + note);
-        } else if (PaysprintUtmOutcome.rejected(data)) {
-            applyOutcome(refid, false, "STATUS_CHECK: " + note);
-        } else {
-            markInProgress(refid, "STATUS_CHECK: " + note);
-        }
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("lead", get(me, id));
-        out.put("partner", mapperToMap(data));
-        return out;
+        throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "SERVICE_REMOVED",
+                "PaySprint status checks have been removed");
     }
 
     public void markInProgress(String refid, String message) {
@@ -394,17 +355,26 @@ public class SalesLeadService {
         }
     }
 
-    private void requireCatalogItemService(UUID catalogItemId) {
+    private void requireCatalogItemService(AuthPrincipal me, UUID catalogItemId) {
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT category_code, provider FROM catalog_items WHERE id = ?", catalogItemId);
         if (rows.isEmpty()) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "ITEM_NOT_FOUND", "Catalog item not found");
         }
         String category = String.valueOf(rows.get(0).get("category_code"));
-        services.requireCatalogCategory(category);
-        if ("FD_CARD".equals(category)) {
-            fdProviders.requireProvider(String.valueOf(rows.get(0).get("provider")));
+        String provider = String.valueOf(rows.get(0).get("provider"));
+        if ("PAYSPRINT".equals(provider) || "LEAD_GEN".equals(category) || PlatformServiceGate.LEAD_CATEGORIES.contains(category)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "SERVICE_REMOVED", "This product has been removed");
         }
+        if ("FD_CARD".equals(category)) {
+            fdProviders.requireProvider(provider);
+            services.requireCatalogCategory(category);
+            if (me != null && "RETAILER".equals(me.userType())) {
+                verification.requireIdentity(me.userId());
+            }
+            return;
+        }
+        services.requireCatalogCategory(category);
     }
 
     private Map<String, Object> snapshotParties(UUID catalogItemId, UUID retailerUserId,

@@ -27,6 +27,11 @@ public class MeController {
             @NotBlank String currentPassword,
             @NotBlank @Size(min = 8) String newPassword) {}
 
+    public record ChangePinRequest(
+            String currentPin,
+            String currentPassword,
+            @NotBlank String newPin) {}
+
     private final UserService users;
 
     public MeController(UserService users) {
@@ -54,5 +59,12 @@ public class MeController {
                                                      @Valid @RequestBody ChangePasswordRequest req) {
         users.changePassword(me.userId(), req.currentPassword(), req.newPassword());
         return ApiResponse.ok(Map.of("updated", true));
+    }
+
+    @PostMapping("/pin")
+    public ApiResponse<Map<String, Object>> pin(@AuthenticationPrincipal AuthPrincipal me,
+                                                @Valid @RequestBody ChangePinRequest req) {
+        users.changePin(me.userId(), req.currentPin(), req.currentPassword(), req.newPin());
+        return ApiResponse.ok(Map.of("updated", true, "hasPin", true));
     }
 }

@@ -1,7 +1,9 @@
 package com.fintech.identity;
 
+import com.fintech.onboarding.InviteService;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiException;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -33,11 +35,14 @@ public class PartnerInquiryService {
     private final JdbcTemplate jdbc;
     private final AdminAccess access;
     private final AdminPlatformService admin;
+    private final InviteService invites;
 
-    public PartnerInquiryService(JdbcTemplate jdbc, AdminAccess access, AdminPlatformService admin) {
+    public PartnerInquiryService(JdbcTemplate jdbc, AdminAccess access, AdminPlatformService admin,
+                                 InviteService invites) {
         this.jdbc = jdbc;
         this.access = access;
         this.admin = admin;
+        this.invites = invites;
     }
 
     @Transactional
@@ -163,7 +168,7 @@ public class PartnerInquiryService {
         String status = String.valueOf(row.get("status"));
         if ("WITH_DISTRIBUTOR".equals(status)) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "ALREADY_WITH_DISTRIBUTOR",
-                    "This inquiry is with a distributor. They can create a retailer from it.");
+                    "This inquiry is with a distributor. They can send a retailer onboarding link from it.");
         }
         Map<String, Object> created = admin.createDistributor(
                 text(row.get("full_name")),
@@ -194,26 +199,41 @@ public class PartnerInquiryService {
     public Map<String, Object> convertRetailer(AuthPrincipal me, UUID id, String password,
                                                String city, String state, String pincode) {
         requireDistributor(me);
+        throw ApiException.of(HttpStatus.FORBIDDEN, "USE_ONBOARDING_INVITE",
+                "Distributors can only onboard retailers by sending a self-service onboarding link");
+    }
+
+    @Transactional
+    public Map<String, Object> sendRetailerInvite(AuthPrincipal me, UUID id, String ip, String userAgent) {
+        requireDistributor(me);
         Map<String, Object> row = getRow(id);
         if (!me.userId().equals(row.get("assigned_distributor"))) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "This inquiry is not assigned to you");
         }
         if (!"WITH_DISTRIBUTOR".equals(row.get("status"))) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INQUIRY_CLOSED",
-                    "This inquiry can no longer be converted");
+                    "This inquiry can no longer be invited");
         }
-        Map<String, Object> created = admin.createRetailer(
+        Map<String, Object> createdInvite = invites.createInvite(
+                me,
+                "RETAILER",
                 text(row.get("full_name")),
                 text(row.get("mobile")),
-                text(row.get("email")),
-                password,
+                blankToNull(text(row.get("email"))),
                 me.userId(),
-                city,
-                state,
-                pincode,
-                me.userId());
-        markConverted(id, (UUID) created.get("id"), "RETAILER");
-        return getRow(id);
+                null,
+                ip,
+                userAgent);
+        jdbc.update("""
+                UPDATE partner_inquiries
+                   SET status = 'CONVERTED',
+                       converted_role = 'RETAILER',
+                       updated_at = now()
+                 WHERE id = ?
+                """, id);
+        Map<String, Object> updated = new LinkedHashMap<>(getRow(id));
+        updated.put("invite", createdInvite);
+        return updated;
     }
 
     private void markConverted(UUID id, UUID userId, String role) {

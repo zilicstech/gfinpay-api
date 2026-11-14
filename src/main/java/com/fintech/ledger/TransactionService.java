@@ -17,9 +17,9 @@ public class TransactionService {
     private static final Logger log = LoggerFactory.getLogger(TransactionService.class);
 
     private static final Map<String, Set<String>> ALLOWED = Map.of(
-            "INITIATED", Set.of("HOLD", "SUCCESS", "FAILED"),
-            "HOLD", Set.of("PENDING", "SUCCESS", "FAILED"),
-            "PENDING", Set.of("SUCCESS", "FAILED"),
+            "INITIATED", Set.of("HOLD", "PENDING", "SUCCESS", "FAILED"),
+            "HOLD", Set.of("PENDING", "SUCCESS", "FAILED", "REVERSED"),
+            "PENDING", Set.of("SUCCESS", "FAILED", "REVERSED"),
             "SUCCESS", Set.of("REVERSED"));
 
     private final JdbcTemplate jdbc;
@@ -58,6 +58,8 @@ public class TransactionService {
             log.info("TXN_TRANSITION no-op txnId={} current={} requested={}", txnId, current, to);
             return false;
         }
+        String cleanRef = (partnerRef == null || partnerRef.isBlank()) ? null : partnerRef.trim();
+        String cleanReason = (failureReason == null || failureReason.isBlank()) ? null : failureReason.trim();
         jdbc.update("""
                 UPDATE transactions
                    SET state = ?,
@@ -66,7 +68,7 @@ public class TransactionService {
                        state_history = state_history || jsonb_build_array(jsonb_build_object('state', ?, 'at', now())),
                        updated_at = now()
                  WHERE id = ?
-                """, to, partnerRef, failureReason, to, txnId);
+                """, to, cleanRef, cleanReason, to, txnId);
         log.info("TXN_TRANSITION txnId={} {} -> {}", txnId, current, to);
         return true;
     }

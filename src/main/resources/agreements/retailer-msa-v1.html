@@ -1,0 +1,331 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<title>Master Service Agreement - Retailer</title>
+<style type="text/css">
+  @page {
+    size: A4 portrait;
+    margin: 20mm 18mm 28mm 18mm;
+    @bottom-left {
+      content: "Agreement No: {{agreementNo}} | Partner: {{partnerCode}} (Retailer) | Page " counter(page) " of " counter(pages);
+      font-family: Helvetica, Arial, sans-serif;
+      font-size: 7.5pt;
+      color: #475569;
+    }
+    @bottom-right {
+      content: "Authorised Signatory: _______________________";
+      font-family: Helvetica, Arial, sans-serif;
+      font-size: 7.5pt;
+      color: #475569;
+    }
+  }
+  body {
+    font-family: Helvetica, Arial, sans-serif;
+    font-size: 9.5pt;
+    line-height: 1.42;
+    color: #0f172a;
+  }
+  h1.doc-title {
+    text-align: center;
+    font-size: 14pt;
+    font-weight: bold;
+    letter-spacing: 0.5pt;
+    margin: 0 0 10pt 0;
+    padding-bottom: 6pt;
+    border-bottom: 1.5pt solid #0f172a;
+  }
+  .meta-banner {
+    background-color: #f8fafc;
+    border: 0.75pt solid #cbd5e1;
+    padding: 6pt 10pt;
+    margin-bottom: 10pt;
+    font-size: 8pt;
+    color: #334155;
+  }
+  p.party-sep {
+    text-align: center;
+    margin: 6pt 0;
+    font-size: 9.5pt;
+  }
+  h2.sec-heading {
+    font-size: 10.5pt;
+    font-weight: bold;
+    margin: 12pt 0 5pt 0;
+    color: #0f172a;
+    page-break-after: avoid;
+  }
+  p.para {
+    margin: 0 0 6pt 0;
+    text-align: justify;
+  }
+  p.clause {
+    margin: 0 0 5pt 0;
+    text-align: justify;
+  }
+  p.lvl-0 { padding-left: 14pt; }
+  p.lvl-1 { padding-left: 28pt; }
+  p.lvl-2 { padding-left: 40pt; }
+  span.num {
+    font-weight: bold;
+  }
+  .page-break {
+    page-break-before: always;
+  }
+  table.schedule-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 8pt;
+    font-size: 9pt;
+  }
+  table.schedule-table th, table.schedule-table td {
+    border: 0.75pt solid #94a3b8;
+    padding: 5pt 8pt;
+    text-align: left;
+    vertical-align: top;
+  }
+  table.schedule-table th {
+    width: 34%;
+    background-color: #f1f5f9;
+    font-weight: bold;
+    color: #1e293b;
+  }
+  table.sig-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 14pt;
+    font-size: 9pt;
+  }
+  table.sig-table td {
+    width: 50%;
+    border: 1pt solid #64748b;
+    padding: 10pt;
+    vertical-align: top;
+  }
+  .sig-box {
+    height: 75pt;
+    border: 0.75pt dashed #94a3b8;
+    background-color: #f8fafc;
+    margin: 8pt 0;
+    padding: 6pt;
+    font-size: 8pt;
+    color: #475569;
+  }
+</style>
+</head>
+<body>
+<div class="meta-banner">
+  <strong>Agreement Reference:</strong> {{agreementNo}} &#160;|&#160;
+  <strong>Partner Code:</strong> {{partnerCode}} &#160;|&#160;
+  <strong>Category:</strong> Retailer MSA ({{templateVersion}}) &#160;|&#160;
+  <strong>Generated On:</strong> {{generatedDate}}
+</div>
+
+<h1 class="doc-title">MASTER SERVICE AGREEMENT</h1>
+<p class="para">This Master Service Agreement is executed at <strong>{{companyPlace}}</strong> on the date it is electronically signed through the portal.</p>
+<p class="party-sep"><strong>BY AND BETWEEN</strong></p>
+<p class="para">M/s. <strong>{{companyName}}</strong>, a company incorporated under the Companies Act, 2013, having its registered office at <strong>{{companyAddress}}</strong>, acting through its authorised signatory, <strong>{{companySignatory}}</strong>, duly authorised by a Board Resolution dated <strong>{{companyBoardResolutionDate}}</strong> (hereinafter referred to as the “First Party” or the “Company”, which expression shall, unless repugnant to the context, include its successors and permitted assigns), of the First Party;</p>
+<p class="party-sep"><strong>AND</strong></p>
+<p class="para"><strong>{{partyName}}</strong>, being <strong>{{partyKind}}</strong> and having its address or registered office at <strong>{{partyAddress}}</strong>, acting through <strong>{{actingThrough}}</strong>, duly authorised to execute this Agreement (hereinafter referred to as the “Second Party” or the “Retailer”, which expression shall, unless repugnant to the context, include its successors and permitted assigns), of the Second Party.</p>
+<p class="para">The First Party and the Second Party are individually referred to as a <strong>“Party”</strong> and collectively as the <strong>“Parties.”</strong></p>
+<p class="para"><strong><u>NOW, THEREFORE</u></strong><strong><u>, IN CONSIDERATION OF THE MUTUAL COVENANTS AND OBLIGATIONS SET OUT IN THIS AGREEMENT, THE PARTIES AGREE TO ENTER INTO THIS AGREEMENT TO RECORD THE TERMS GOVERNING THE COMPANY’S PROVISION OF ITS PRODUCTS AND SERVICES TO THE RETAILER AND THE RETAILER’S ACCESS TO AND USE OF THOSE PRODUCTS AND SERVICES.</u></strong></p>
+<h2 class="sec-heading">1. DEFINITION</h2>
+<p class="para">The terms used in this Agreement shall be interpreted in their ordinary and grammatical sense, having regard to the context and purpose of this Agreement. Words in the singular include the plural and vice versa, and references to any gender include all genders, unless the context requires otherwise. Headings are for convenience only and shall not affect the interpretation of this Agreement. To avoid doubt, certain terms used in this Agreement are specifically defined below; those terms shall have the meanings assigned to them wherever they appear in this Agreement, unless the context clearly requires otherwise.</p>
+<p class="clause lvl-0"><span class="num">A.</span> “<strong>Agreement</strong>” means this Master Service Agreement, as signed and executed by the Parties, together with any amendments or addenda made to it in writing.</p>
+<p class="clause lvl-0"><span class="num">B.</span> <strong>Applicable Law”</strong> means the laws and regulations applicable to the Parties or this Agreement.</p>
+<p class="clause lvl-0"><span class="num">C.</span> <strong>Business Day”</strong> means the days on which banks are open in the relevant location.</p>
+<p class="clause lvl-0"><span class="num">D.</span> <strong>“Company”</strong> means the First Party, which shall provide the services and products specified in this Agreement.</p>
+<p class="clause lvl-0"><span class="num">E.</span> <strong>“Effective Date”</strong> means the date on which the Retailer shall access and digitally sign the present agreement through the portal of the Company. </p>
+<p class="clause lvl-0"><span class="num">F.</span> <strong>Force Majeure Event”</strong> means the events beyond a party’s reasonable control that prevent or delay performance.</p>
+<p class="clause lvl-0"><span class="num">G.</span> <strong>“Intellectual Property”</strong> means the trademarks, trade names, logos, designs, and other intellectual property rights owned by the Company or licensed to the Company for use.</p>
+<p class="clause lvl-0"><span class="num">H.</span> <strong>“Products”</strong> means the Product/goods as offered by the Company to the Retailer under this agreement.</p>
+<p class="clause lvl-0"><span class="num">I.</span> <strong>“Portal” </strong>means the online system as developed by the Company for rendering the services under this agreement. </p>
+<p class="clause lvl-0"><span class="num">J.</span> <strong>“Retailer”</strong> means the Second Party, which has provided the documents required to establish its legal existence and has executed this Agreement.</p>
+<p class="clause lvl-0"><span class="num">K.</span> <strong>“Services”</strong> means the services as offered by the Company pertaining to Financial services &amp; products including but not limited to Domestic Money Transfer, MATM, UPI into Cash, White Label Solutions and any other services which maybe offered by the Company to the Retailer in future subject to the pricing of the same. </p>
+<p class="clause lvl-0"><span class="num">L.</span>  <strong>“Territory”</strong> the geographic area in which the Retailer may operate as agreed by the company pertaining to the services or goods as provided by the Company under this agreement. </p>
+<h2 class="sec-heading">2. BACKGROUND</h2>
+<p class="clause lvl-0"><span class="num">A.</span> The Company is a fintech enterprise engaged in developing, facilitating, and providing Financial related services &amp; products and other products and services. The Company operates across India and may make its products and services available through its online portal, in accordance with this Agreement and applicable laws</p>
+<p class="clause lvl-0"><span class="num">B.</span> The Retailer has approached the Company to access and use the products and services made available by the Company under this Agreement. The Retailer represents that it has provided the Company with the documents and information requested to establish its identity and, where applicable, its legal existence. The Retailer agrees to use the portal and the products and services only for legitimate and lawful business purposes, and to comply with this Agreement and applicable laws.</p>
+<h2 class="sec-heading">3. OBJECTIVE &amp; SCOPE</h2>
+<p class="clause lvl-0"><span class="num">A.</span> The Parties agree to work together in connection with the products and services made available by the Company through its portal. These may include financial products and services, as well as other products or services that the Company may offer from time to time. The Company may notify the Retailer of additional products or services and any applicable terms through the portal or by other written or electronic communication. The Retailer’s access to or use of an additional product or service shall be subject to this Agreement and any applicable service-specific terms communicated by the Company. The Parties agree to be bound by the terms applicable to the products and services used by the Retailer.</p>
+<p class="clause lvl-0"><span class="num">B.</span> The products and services offered under this Agreement may operate under different commercial models. Depending on the relevant product or service, the Company may pay a commission to the Retailer, or the Retailer may be required to pay a commission, fee, or other charge to the Company. The applicable rates, calculation method, and payment terms shall be specific to each product or service and shall be communicated on the portal or the Company’s website. The terms displayed or communicated for the relevant service shall apply to the Retailer’s use of that service, subject to this Agreement.</p>
+<h2 class="sec-heading">4. ON-BOARDING PROCESS &amp; CONDITIONS:</h2>
+<p class="clause lvl-0"><span class="num">A.</span> The Retailer shall provide the Company with all KYC documents and other information required for onboarding. The Retailer represents and warrants that all documents and information it provides are true, accurate, complete, and not misleading, and that it has not concealed any material information. The Retailer shall promptly notify the Company of any material change and provide updated documents when requested. Onboarding is subject to the Company’s verification and approval of the information provided. The Company may decline or suspend onboarding or access to the portal if the Retailer fails to provide the required information or if any information is found to be false, incomplete, or misleading, subject to applicable law.</p>
+<p class="clause lvl-0"><span class="num">B.</span> Where reasonably required, including in connection with a credit facility or other financial exposure, the Company may request the Retailer to provide additional security or supporting documents, including a personal or financial guarantee, promissory note, cheque, or other instrument permitted by applicable law. The Company shall specify the required documents and any applicable terms in writing. The Retailer shall provide the requested documents within the period stated in the request. Failure to do so shall constitute a material breach of this Agreement, and the Company may suspend or restrict the Retailer’s access to the portal or relevant services until the requested documents are provided, subject to applicable law.</p>
+<h2 class="sec-heading">5. DURATION</h2>
+<p class="clause lvl-0"><span class="num">A.</span> This Agreement shall commence on the date on which the last Party digitally signs it and shall remain in force for an initial period of <strong>three (3) years</strong> from the Effective Date, unless terminated earlier in accordance with this Agreement.</p>
+<p class="clause lvl-0"><span class="num">B.</span> Upon completion of the initial term, this Agreement shall automatically renew for successive periods of <strong>three (3) years</strong> each, on the same terms and conditions, unless either Party gives the other Party written notice of its intention not to renew at least <strong>thirty (30) days</strong> before the expiry of the then-current term. The Parties may agree in writing to different terms for a renewal period.</p>
+<p class="clause lvl-0"><span class="num">C.</span> Expiry or non-renewal of this Agreement shall not affect any rights, obligations, or liabilities that accrued before the date of expiry or termination. Any provisions which by their nature are intended to continue after expiry or termination shall remain in effect.</p>
+<h2 class="sec-heading">6. RELATIONSHIP BETWEEN THE PARTIES</h2>
+<p class="clause lvl-0"><span class="num">A.</span> The Parties are independent contracting parties. Nothing in this Agreement shall be construed as creating a partnership, joint venture, employment, franchise, or agency relationship between them. Neither Party may make a representation, give a warranty, or incur an obligation on behalf of the other Party unless expressly authorised in writing.</p>
+<p class="clause lvl-0"><span class="num">B.</span> The Company provides the portal and related technology platform to enable the Retailer to access or facilitate the products and services described in this Agreement. In relation to the Retailer’s activities on the portal, the Company acts as a platform provider and intermediary, subject to its express obligations under this Agreement and applicable law. The Company does not control or undertake the Retailer’s business, representations, or independent acts or omissions.</p>
+<p class="clause lvl-0"><span class="num">C.</span> The Retailer shall be solely responsible for its own acts and omissions, and for the acts and omissions of its employees, agents, and representatives. No such act or omission shall bind the Company or create any obligation or liability on the Company’s behalf, except to the extent expressly provided in this Agreement or required by applicable law. The Retailer shall use the portal and services in compliance with this Agreement and applicable law.</p>
+<h2 class="sec-heading">7. ON BOARDING FEES:-</h2>
+<p class="clause lvl-0"><span class="num">A.</span> The Retailer shall pay the Company a one-time onboarding fee of <strong>{{onboardingFee}}</strong>, as mutually agreed by the Parties. This fee covers the Retailer’s registration and access to the platform, together with reasonable initial assistance to help the Retailer understand how to use the portal.</p>
+<p class="clause lvl-0"><span class="num">B.</span> The onboarding fee is a one-time charge and, once paid, is non-refundable and may not be claimed or recovered by the Retailer, except where a refund is required under applicable law.</p>
+<h2 class="sec-heading">8. PAYMENTS &amp; CREDIT LINE</h2>
+<p class="clause lvl-0"><span class="num">A.</span> All the Services, the portal shall operate on a prepaid basis, unless the Company separately grants the Retailer a credit line under this clause. The Retailer may add funds to its wallet using the payment methods made available on the portal. Subject to the wallet having sufficient funds, the Retailer may use those funds to access the applicable services and pay related charges, fees, or commissions. The Retailer shall ensure that its wallet has sufficient funds before initiating a transaction. The Company may decline or suspend a transaction if the wallet balance is insufficient or if required under this Agreement or applicable law</p>
+<p class="clause lvl-0"><span class="num">B.</span> The Company may, at its sole discretion, offer the Retailer a credit line or permit payment within a specified period. Any such facility shall be subject to the Company’s approval and to the applicable limit, duration, fees, repayment schedule, and other terms communicated to the Retailer in a separate written offer or through the portal. The credit line shall apply only if the Retailer accepts the offer in the manner specified by the Company, and only to the services identified in that offer. The Company may amend, suspend, or withdraw the facility in accordance with the terms of the offer and applicable law. Unless and until a credit line is approved and accepted, the prepaid payment terms shall apply to the relevant services.</p>
+<h2 class="sec-heading">9. COMMISSION</h2>
+<p class="clause lvl-0"><span class="num">A.</span> <u>Commission Eligibility</u>. For services designated by the Company as commission-bearing services, the Retailer may earn a commission on eligible transactions completed through the Portal. For certain services, the Retailer may instead be required to pay a commission and/or service charges to the Company, as applicable. The applicable commission rate or amount, calculation basis, eligibility conditions, and any applicable deductions shall be as displayed on the Portal or otherwise communicated by the Company in writing. No commission shall be payable to the Retailer for any service unless the Company has expressly designated such service as commission-bearing. All commissions payable to the Retailer shall be credited to the Retailer&#x27;s Portal Wallet or bank account, as applicable, in accordance with the Company&#x27;s applicable policies.</p>
+<p class="clause lvl-0"><span class="num">B.</span> <u>Commission Structure and Incentives</u>. The Company may offer base commissions and, from time to time, performance-based incentives. Any incentive shall be subject to the performance criteria, qualifying period, transaction thresholds, and other conditions notified by the Company. The Company may amend or withdraw commission rates or incentive schemes prospectively by notice through the portal or other written communication. Any change shall apply from the effective date stated in the notice and shall not retrospectively alter commission already earned on eligible transactions.</p>
+<p class="clause lvl-0"><span class="num">C.</span> <u>Calculation and Adjustments</u>. Commission shall be calculated on eligible transactions recorded in the Company’s systems, subject to applicable taxes, statutory deductions, reversals, refunds, chargebacks, disputes, and adjustments. The Company’s transaction records shall be used to calculate commission, unless a manifest error is established. The Retailer shall be responsible for any taxes applicable to commission paid or credited to it, and the Company may make any withholding required by law.</p>
+<p class="clause lvl-0"><span class="num">D.</span> <u>Credit-Line Adjustments</u>. If the Company has approved a credit line or other credit facility for the Retailer, the Company may apply commission, incentives, wallet balances, or other amounts payable to the Retailer toward amounts due under that facility, in accordance with the applicable credit-line offer or terms.</p>
+<p class="clause lvl-0"><span class="num">E.</span> <u>Payment or Credit of Commission</u>. The Company may credit commission to the Retailer’s portal wallet or another account or payment method specified by the Company. Any withdrawal of credited amounts, if made available, shall be subject to the Company’s verification, KYC requirements, applicable law, and the portal’s operational procedures. Commission shall be treated as payable only after it has been calculated and confirmed by the Company.</p>
+<p class="clause lvl-0"><span class="num">F.</span> <u>Service-Specific Charges</u>. For payment gateway or other services where a merchant discount rate, transaction fee, or similar charge applies, the applicable rate and treatment of refunds, reversals, and chargebacks shall be as stated on the portal or in the applicable service terms. The Retailer shall not impose an unauthorised surcharge on a customer. Any non-refundability of such a charge shall apply only where stated in the relevant service terms and permitted by applicable law.</p>
+<p class="clause lvl-0"><span class="num">G.</span> <u>Disputes and Withholding</u>. The Company may withhold, suspend, or adjust commission, incentives, wallet credits, or settlement amounts to the extent reasonably necessary to address a pending chargeback, refund, dispute, investigation, suspected fraud, breach of this Agreement, or amount due from the Retailer. The Company shall release any withheld amount that is determined not to be required for that matter, subject to applicable law and the relevant service terms.</p>
+<h2 class="sec-heading">10. CUSTOMER SERVICE &amp; FRAUD MANAGEMENT</h2>
+<p class="clause lvl-0"><span class="num">A.</span> The Retailer shall be primarily responsible for receiving and addressing queries, requests, and complaints from end customers relating to transactions or services facilitated by the Retailer. The Company shall provide the Retailer with reasonable assistance, where requested, to help address such matters.</p>
+<p class="clause lvl-0"><span class="num">B.</span> If the Retailer becomes aware of or reasonably suspects fraud, unauthorised activity, or other suspicious conduct relating to a transaction or service accessed through the portal, the Retailer shall promptly report it to the Company and provide all relevant information and assistance. Upon receiving such a report, the Company may suspend or block the Retailer’s account or access to the relevant service, and may take any other reasonable steps it considers necessary to prevent further suspected fraud, subject to applicable law. The Retailer shall remain responsible for transactions initiated by or through it and for resulting losses, and company shall not be liable for the same.</p>
+<p class="clause lvl-0"><span class="num">C.</span> The Retailer shall not conceal, suppress, or knowingly fail to report suspected fraud or unauthorised activity of which it becomes aware. Any such failure may constitute a material breach of this Agreement and may be considered, together with other relevant evidence, in determining the Retailer’s responsibility. The Company may suspend or terminate the Retailer’s access and refer the matter to the appropriate authorities or initiate other lawful proceedings. Failure to report, by itself, shall not be conclusive proof that the Retailer knowingly committed fraud.</p>
+<p class="clause lvl-0"><span class="num">D.</span> The Retailer shall be liable for any and all transactions, including any suspicious, fraudulent, or unauthorised transactions, committed by or through the Retailer using the Portal. The Retailer shall be liable to reimburse the Company for the entire amount of any such transaction within 24 hours of receiving a report or notice thereof. In the event of failure to make such reimbursement within the stipulated period, the Company shall be entitled to initiate appropriate legal proceedings and to hold, suspend, or terminate the Retailer’s account or access to the Portal. The Company shall also be entitled to withhold or forfeit the balance available in the Retailer’s wallet.</p>
+<h2 class="sec-heading">11. INTELLECTUAL PROPERTY RIGHTS</h2>
+<p class="clause lvl-0"><span class="num">A.</span> All trademarks, trade names, logos, service marks, designs, software, content, and other intellectual property made available through the portal or in connection with the services (collectively, “Company Materials”) shall remain the property of the Company or its respective partners and licensors. Nothing in this Agreement transfers ownership of any Company Materials to the Retailer.</p>
+<p class="clause lvl-0"><span class="num">B.</span> During the term of this Agreement, the Retailer may use the Company’s branding only to the extent expressly authorised by the Company and only for the purposes and in the manner permitted under this Agreement or separately approved in writing by the Company. The Retailer shall not use, reproduce, modify, display, or distribute any Company Materials or branding in any other manner, or suggest that it owns or has authority over them</p>
+<p class="clause lvl-0"><span class="num">C.</span> Upon expiry or termination of this Agreement, or earlier upon the Company’s request, the Retailer shall immediately stop using the Company’s branding and other Company Materials, remove them from its premises, materials, systems, and communications, and cease offering or operating any service under that branding. Any permission to use the Company’s branding shall end at that time. The Retailer shall not thereafter use or permit the use of any Company Materials.</p>
+<h2 class="sec-heading">12. REPRESENTATIONS, WARRANTIES AND UNDERTAKINGS</h2>
+<p class="clause lvl-0"><span class="num">A.</span>  The Company represents and warrants as under:-</p>
+<p class="clause lvl-0"><span class="num">i.</span> The Company represents and warrants that it is duly incorporated and validly existing under the laws of India and has the power and authority to enter into this Agreement and perform its obligations under it.</p>
+<p class="clause lvl-0"><span class="num">ii.</span> The Company represents that it owns, or has obtained the necessary rights and permissions to provide or make available, the portal and the products and services described in this Agreement, subject to the terms of this Agreement and applicable law.</p>
+<p class="clause lvl-0"><span class="num">iii.</span> The Company shall use reasonable efforts to keep the portal available and provide the services in accordance with this Agreement. The Company shall perform its obligations in compliance with the laws and regulatory requirements applicable to it and the services it provides. The Company may temporarily suspend access for maintenance, security concerns, regulatory requirements, or circumstances beyond its reasonable control.</p>
+<p class="clause lvl-0"><span class="num">B.</span> That the Retailer represents and undertakes for the following:-</p>
+<p class="clause lvl-0"><span class="num">i.</span> The Retailer represents and warrants that it has the legal capacity and authority to enter into and perform this Agreement. The Retailer confirms that the identity, business, registration, banking, and other documents and information it has provided to the Company are true, complete, accurate, and current. The Retailer shall promptly notify the Company of any material change to that information and provide updated documents when requested.</p>
+<p class="clause lvl-0"><span class="num">ii.</span> The Retailer shall maintain the personnel, systems, devices, infrastructure, and resources reasonably necessary to use the portal and perform its obligations under this Agreement. The Retailer shall comply with all applicable laws, rules, regulations, and directions of competent authorities, including any requirements applicable to the products or services it uses under this Agreement.</p>
+<p class="clause lvl-0"><span class="num">iii.</span> The Retailer shall use the portal and the Company’s products and services only for legitimate and lawful purposes. The Retailer shall not make any false or misleading statement, engage in fraud or other unlawful or unethical conduct, or permit any person acting on its behalf to do so. The Retailer shall be responsible for its acts and omissions and those of its employees, agents, and representatives.</p>
+<p class="clause lvl-0"><span class="num">iv.</span> The Retailer shall protect its login credentials, devices, systems, and transaction information from unauthorised access or use. It shall not use or permit the use of unauthorised applications, software, emulators, devices, or methods to access the portal or process transactions. The Retailer shall promptly notify the Company of any suspected unauthorised access, compromise, or misuse of its account or credentials</p>
+<p class="clause lvl-0"><span class="num">v.</span> When using any payment, money transfer, wallet, identity verification, or other regulated service made available through the portal, the Retailer shall follow the relevant operating instructions and security requirements communicated by the Company, and obtain any customer consent required by applicable law. The Retailer shall not collect, use, or disclose a customer’s personal, payment, identity, or biometric information except as permitted by applicable law and the relevant service instructions. Any requirements that apply only to a particular service shall apply only when the Retailer uses that service.</p>
+<p class="clause lvl-0"><span class="num">vi.</span> The Retailer shall comply with the fees, commissions, refund, reversal, dispute, and chargeback terms applicable to each service, as communicated in this Agreement, on the portal, or in a separate written offer accepted by the Retailer. The Retailer shall be responsible for losses, reversals, disputes, or claims to the extent arising from its breach of this Agreement, its instructions, or its acts or omissions, subject to applicable law and the terms governing the relevant service.</p>
+<p class="clause lvl-0"><span class="num">vii.</span> The Retailer represents that any funds it deposits, collects, transfers, or uses in connection with the services are lawfully held and are not proceeds of unlawful activity. The Retailer shall be responsible for claims or disputes concerning the source, ownership, or legality of funds to the extent they arise from the Retailer’s conduct or breach of this representation.</p>
+<p class="clause lvl-0"><span class="num">viii.</span> The Retailer shall promptly disclose to the Company any actual or potential conflict of interest involving the Retailer and any employee, officer, or representative of the Company. The Retailer shall not offer, pay, solicit, or accept any unauthorised commission, kickback, gift, or other improper benefit in connection with this Agreement. A breach of this clause shall constitute a material breach of this Agreement and may entitle the Company to suspend the Retailer’s access to the portal or terminate this Agreement, subject to applicable law.</p>
+<p class="clause lvl-0"><span class="num">ix.</span> The Retailer’s representations and warranties shall remain in effect during the term of this Agreement. The Retailer shall promptly inform the Company if any representation or warranty becomes materially inaccurate.</p>
+<h2 class="sec-heading">13. TERMINATION &amp; EFFECT</h2>
+<p class="clause lvl-0"><span class="num">A.</span> <u>Termination by the Company:- </u>The Company may, by written or electronic notice, suspend/block the Retailer’s access to the portal, or to any particular service, or the Retailer’s account, for terminating this Agreement, if:</p>
+<p class="clause lvl-0"><span class="num">i.</span> The Retailer breaches this Agreement and, where the breach can be remedied, fails to remedy it within thirty (30) days after receiving notice from the Company;</p>
+<p class="clause lvl-0"><span class="num">ii.</span> The Retailer commits fraud, misrepresentation, unauthorised activity, or other unlawful or dishonest conduct, or the Company reasonably suspects such conduct;</p>
+<p class="clause lvl-0"><span class="num">iii.</span> The Retailer violates applicable law, a regulatory or service-provider requirement, or a material security or operating instruction relating to a service;</p>
+<p class="clause lvl-0"><span class="num">iv.</span> The Retailer misuses the portal, compromises its security, provides false or incomplete information, or permits unauthorised access to its account;</p>
+<p class="clause lvl-0"><span class="num">v.</span> The Retailer fails to pay an amount when due, including an amount payable under an approved credit line, and does not pay it within the period specified in a notice from the Company; or</p>
+<p class="clause lvl-0"><span class="num">vi.</span> The Retailer becomes insolvent, enters liquidation or winding-up, makes an arrangement with creditors, or becomes subject to a similar proceeding, to the extent permitted by applicable law.</p>
+<p class="para">Where the Company reasonably considers that continued access may create a legal, regulatory, security, financial, or material reputational risk, or where suspension or termination is required by law, a regulator, or a relevant service provider, the Company may suspend the affected account or service immediately and, where appropriate, terminate this Agreement without a cure period. The Company shall notify the Retailer of the suspension or termination electronically or in writing, where legally permitted.</p>
+<p class="clause lvl-0"><span class="num">B.</span> <u>Service or partner discontinuation</u>. The Company may suspend, discontinue, or terminate access to any affected product or service if an underlying bank, payment network, technology provider, business partner, or other service provider withdraws, suspends, or materially changes the arrangement required to provide that product or service, or if the Company is required to do so by law or a competent authority. The Company may terminate this Agreement if the change materially affects the Company’s ability to perform it.</p>
+<p class="clause lvl-0"><span class="num">C.</span> <u>Termination on notice</u>. Either Party may terminate this Agreement for convenience by giving the other Party at least thirty (30) days’ prior written notice. The Company may, during that notice period, restrict access to particular services where reasonably necessary to manage an orderly discontinuation, protect users or the platform, or comply with applicable law.</p>
+<p class="clause lvl-0"><span class="num">D.</span> Effect of termination. On expiry or termination:</p>
+<p class="clause lvl-0"><span class="num">i.</span> the Retailer shall immediately stop accessing and using the portal and the Company’s products, services, branding, and other Company Materials, except to the extent access is temporarily permitted for account closure or reconciliation;</p>
+<p class="clause lvl-0"><span class="num">ii.</span> The Retailer shall pay all amounts due and payable to the Company under this Agreement, including commissions, amounts drawn under any credit line, fees, charges, and other outstanding sums. Upon termination, the Company may set off and deduct from any wallet balance or other funds held for the Retailer any amounts then due and payable. The Company shall return any remaining undisputed balance to the Retailer after completing the applicable transaction reconciliation and making any deductions permitted under this Agreement or applicable law.</p>
+<p class="clause lvl-0"><span class="num">iii.</span> Each Party shall return or securely destroy the other Party’s Confidential Information in its possession or control, subject to any legal, regulatory, record-retention, or audit requirements;</p>
+<p class="clause lvl-0"><span class="num">iv.</span> termination shall not affect rights, remedies, liabilities, or obligations that accrued before termination or provisions which by their nature are intended to continue after termination.</p>
+<p class="clause lvl-0"><span class="num">E.</span> The Termination or suspension shall be without prejudice to any other right or remedy available to the Company under this Agreement or applicable law. The Company may seek recovery of losses arising from the Retailer’s breach, subject to applicable law.</p>
+<h2 class="sec-heading">14. CONFIDENTIALITY AND DATA PROTECTION</h2>
+<p class="clause lvl-0"><span class="num">A.</span> <u>Confidential Information</u>. For this Agreement, “Confidential Information” means this Agreement and its terms, and any non-public information disclosed or made available by or on behalf of a Party to the other Party, whether before or after signing and in any form. It includes business, financial, technical, operational, pricing, commission, credit-line, security, customer, transaction, and personal data; information concerning the portal, products, services, systems, processes, and business plans; and information that is identified as confidential or would reasonably be understood to be confidential given its nature or the circumstances of disclosure.</p>
+<p class="clause lvl-0"><span class="num">B.</span> <u>Use and Protection</u>. Each Party shall use the other Party’s Confidential Information only as necessary to perform or exercise its rights under this Agreement. Each Party shall protect it using at least reasonable care and shall not disclose, copy, publish, or otherwise make it available to any third party except as permitted under this clause. The Retailer shall not use the Company’s Confidential Information, customer or transaction data, or credit-line terms for its own or any third party’s independent commercial purpose.</p>
+<p class="clause lvl-0"><span class="num">C.</span> <u>Permitted Disclosure.</u> A Party may disclose Confidential Information only to its employees, agents, professional advisers, auditors, or service providers who need it for the purposes of this Agreement and are bound by confidentiality obligations. The disclosing Party remains responsible for their compliance with this clause. The Company may also disclose relevant information to its affiliates, banks, payment networks, technology providers, business partners, and regulators where reasonably necessary to provide or support the services, comply with law, or protect its rights, subject to applicable confidentiality and data-protection requirements.</p>
+<p class="clause lvl-0"><span class="num">D.</span> <u>Exclusions</u>. Confidential Information does not include information the receiving Party can demonstrate: (a) is or becomes publicly available other than through breach of this Agreement; (b) was lawfully known to it without restriction before disclosure; (c) is received lawfully from a third party without a confidentiality obligation; or (d) is independently developed without use of the disclosing Party’s Confidential Information.</p>
+<p class="clause lvl-0"><span class="num">E.</span> <u>Compelled Disclosure</u>. A Party may disclose Confidential Information to the extent required by applicable law, regulation, court order, or a competent authority. Where legally permitted, it shall give the other Party advance notice and reasonably cooperate, at the other Party’s cost, with any lawful effort to limit or protect the disclosure</p>
+<p class="clause lvl-0"><span class="num">F.</span> <u>Credit-Line Information</u>. The Retailer shall keep confidential all limits, terms, pricing, repayment schedules, and communications relating to any credit line or payment facility offered by the Company. It shall not disclose such information to a third party without the Company’s prior written consent, except to its professional advisers who are bound by confidentiality obligations or where disclosure is required by law.</p>
+<p class="clause lvl-0"><span class="num">G.</span> <u>Data Protection and Processing of Personal Data</u>. </p>
+<p class="clause lvl-0"><span class="num">i.</span> Each Party shall comply with the Digital Personal Data Protection Act, 2023, the rules made under it, and any amendments or other applicable data-protection laws, in each case to the extent in force and applicable to that Party and its activities under this Agreement (collectively, “Data Protection Laws”). </p>
+<p class="clause lvl-0"><span class="num">ii.</span> Each Party shall process digital personal data only for a lawful purpose and in accordance with the Data Protection Laws. Where a Party determines the purpose and means of processing personal data, it shall be responsible for complying with the obligations applicable to it as a Data Fiduciary. Where the Retailer processes personal data on behalf of the Company and in accordance with the Company’s documented instructions, the Retailer shall process that data only for the purposes of this Agreement and those instructions, and shall not use it for any independent purpose or disclose it to another person except as authorised by the Company or required by law. The Parties shall document any additional processing instructions or safeguards reasonably required for a service. </p>
+<p class="clause lvl-0"><span class="num">iii.</span> Each Party shall, to the extent of its role and obligations under the Data Protection Laws, ensure that required notices are given and valid consent or other lawful grounds for processing are in place; use personal data only for the stated lawful purpose; maintain reasonable security safeguards; support the handling of requests from individuals whose personal data is processed; and retain, erase, or anonymise personal data as required by law and the applicable service requirements. The Retailer shall ensure that its employees, agents, and representatives who access personal data are bound by appropriate confidentiality and security obligations</p>
+<p class="clause lvl-0"><span class="num">H.</span> <u>Personal Data Breach</u>. The Retailer shall notify the Company in writing immediately, and in any event within twenty-four (24) hours of becoming aware of any actual or suspected Personal Data Breach involving Personal Data processed in connection with this Agreement. The Retailer shall provide all available information reasonably necessary to assess the breach and fully cooperate with the Company in investigating, containing, and remedying it.The Retailer shall not notify any affected Data Principal, regulatory authority, or third party regarding such breach without the Company&#x27;s prior written approval, except where independently required by applicable law. The Company shall retain the right to make any notifications required under applicable Data Protection Laws. The Retailer shall be responsible for any breach attributable to its acts or omissions and shall indemnify the Company against all resulting losses, liabilities, penalties, costs, and expenses, subject to applicable law.</p>
+<p class="clause lvl-0"><span class="num">I.</span> <u>Return or Deletion</u>. Upon termination of this Agreement or the disclosing Party’s written request, the receiving Party shall, subject to applicable law and legitimate record-retention requirements, return or securely delete the disclosing Party’s Confidential Information in its possession or control. Any retained information shall remain protected under this clause.</p>
+<p class="clause lvl-0"><span class="num">J.</span> <u>Duration</u>. The obligations in this clause apply during the term of this Agreement and for five (5) years after its expiry or termination. For trade secrets and personal data, the obligations shall continue for as long as the information remains protected as a trade secret or is required to be protected under applicable law, respectively.</p>
+<h2 class="sec-heading">15. LIABILITY</h2>
+<p class="clause lvl-0"><span class="num">A.</span> <strong><u>Company’s Liability</u></strong>. </p>
+<p class="clause lvl-0"><span class="num">i.</span> To the maximum extent permitted by applicable law, the Company shall not be liable for any loss, claim, damage, cost, or expense arising from or relating to any act or omission, breach, negligence, fraud, or misconduct of the Retailer or any of its employees, agents, representatives, customers, or other persons acting through or under the Retailer.</p>
+<p class="clause lvl-0"><span class="num">ii.</span> If the Company is liable for a direct loss proven to have arisen solely from the Company’s breach of this Agreement or negligent omission, the Company’s total aggregate liability arising out of or relating to the relevant event shall not exceed whichever is lesser of (a) Rs. 20,000; or (b) the Company’s net profit earned from the Retailer during the three (3) months immediately preceding the event giving rise to the claim. If the Retailer has used the Company’s services for less than three months, the cap under paragraph (b) shall be calculated over that shorter period. The Company’s records shall be used to calculate its net profit for this purpose.</p>
+<p class="clause lvl-0"><span class="num">B.</span> <strong><u>Retailer’s Liability.</u></strong> </p>
+<p class="clause lvl-0"><span class="num">i.</span> The Retailer shall be responsible for and liable for claims, losses, liabilities, costs, and expenses arising out of or relating to its acts or omissions, its transactions or instructions, or the acts or omissions of its employees, agents, representatives, or persons accessing or using the portal through its account. This includes third-party claims relating to transactions initiated, facilitated, or submitted by or through the Retailer; chargebacks, reversals, refunds, disputed or unauthorised transactions, and amounts imposed on or recovered from the Company by a bank, payment network, payment gateway, service provider, or other third party; and reasonable legal fees and other reasonable costs incurred by the Company in responding to litigation, proceedings, investigations, or claims arising from such conduct.</p>
+<p class="clause lvl-0"><span class="num">ii.</span> The Retailer shall be solely responsible for refunds, chargebacks, reversals, and any related claims, fraud or suspicious transactions arising from transactions initiated or facilitated by or through the Retailer on the Portal. The Company may provide reasonable assistance in addressing such matters but shall not be liable for the same, except to the extent directly caused by the Company&#x27;s breach of this Agreement or as otherwise required under applicable law. The Retailer shall reimburse the Company for all amounts, fees, charges and costs incurred by or charged to the Company in connection with such matters. The Retailer shall further be liable to refund or reimburse the amount equivalent to any such suspicious transaction, fraud or claim within twenty-four (24) hours of being notified by the Company. Failure to make such refund or reimbursement within the stipulated period shall entitle the Company to initiate appropriate legal proceedings and to suspend or terminate the Retailer&#x27;s account or access to the Portal, and to withhold or adjust the balance available in the Retailer&#x27;s wallet, subject to applicable law and the terms of this Agreement.</p>
+<p class="clause lvl-0"><span class="num">iii.</span> In addition to the foregoing, the Retailer shall be liable for all incidental costs and expenses incurred by the Company in initiating, filing, prosecuting or defending any legal proceedings arising out of or in connection with any fraud, misconduct or breach committed by the Retailer. </p>
+<p class="clause lvl-0"><span class="num">C.</span> <u>Matters Not Limited</u>. Nothing in this clause excludes or limits liability to the extent it cannot lawfully be excluded or limited, or limits the Retailer’s payment obligations, its liability for fraud or wilful misconduct, or its indemnity obligations under this Agreement.</p>
+<h2 class="sec-heading">16. INDEMNITY</h2>
+<p class="clause lvl-0"><span class="num">A.</span> That the Retailer shall indemnify, defend, and hold harmless the Company, its affiliates, and each of their respective directors, officers, employees, agents, and representatives (the “Indemnified Parties”) from and against all claims, demands, actions, proceedings, losses, liabilities, damages, penalties, costs, and expenses, including reasonable legal fees and investigation costs (collectively, “Losses”), to the extent arising out of or relating to:-</p>
+<p class="clause lvl-0"><span class="num">i.</span> any act or omission, fraud, wilful misconduct, negligence, misrepresentation, or unlawful conduct of the Retailer or its employees, agents, representatives, or any person accessing or using the portal through the Retailer’s account;</p>
+<p class="clause lvl-0"><span class="num">ii.</span> any breach by the Retailer of this Agreement, including any representation, warranty, or undertaking given under it;</p>
+<p class="clause lvl-0"><span class="num">iii.</span> the Retailer’s failure to comply with applicable laws, regulations, directions of competent authorities, or service-specific operating, security, or customer-consent requirements;</p>
+<p class="clause lvl-0"><span class="num">iv.</span> any claim, complaint, investigation, or proceeding by a customer, bank, payment network, service provider, regulator, law-enforcement agency, or other third party arising from the Retailer’s conduct, instructions, transactions, or use of the portal or services;</p>
+<p class="clause lvl-0"><span class="num">v.</span> any chargeback, reversal, refund, disputed transaction, unauthorised transaction, fraud claim, penalty, or other loss relating to a transaction initiated, facilitated, or submitted by or through the Retailer, including any amount charged to or recovered from the Company by a bank, payment gateway, payment network, or other service provider, to the extent attributable to the Retailer or persons acting through it;</p>
+<p class="clause lvl-0"><span class="num">vi.</span> any misappropriation, diversion, withholding, delay, shortage, or unauthorised handling of funds by the Retailer or its employees, agents, or representatives;</p>
+<p class="clause lvl-0"><span class="num">vii.</span> any unauthorised use of the Company’s name, branding, intellectual property, or association, or any representation made by the Retailer that was not authorised by the Company; or any claim by a third party arising from the Retailer’s separate dealings, commitments, or representations.</p>
+<p class="clause lvl-0"><span class="num">B.</span> The Company shall, where reasonably practicable, notify the Retailer of a claim for which indemnity is sought, failure to notify the Retailer, shall not absolve them from their liability. The Company may participate in the defence of any claim through counsel of its choice. </p>
+<p class="clause lvl-0"><span class="num">C.</span> The Retailer shall promptly provide information, records, transaction details, and reasonable assistance requested by the Company in connection with any claim, chargeback, reversal, complaint, audit, or investigation covered by this clause. The Retailer shall preserve relevant records and cooperate with the Company and, where required, the relevant bank, service provider, regulator, or law-enforcement agency.</p>
+<p class="clause lvl-0"><span class="num">D.</span> To the extent permitted by applicable law, the Company may recover amounts payable under this indemnity by setting them off against amounts otherwise payable to the Retailer or deducting them from the Retailer’s wallet or other funds held by the Company. The Company shall provide the Retailer with a reasonable statement of the amount recovered or deducted. Any amount not recovered in this manner shall remain payable by the Retailer upon demand.</p>
+<p class="clause lvl-0"><span class="num">E.</span> The Retailer’s indemnity applies only to the extent a Loss is caused by a matter described under this clause. Nothing in this clause limits any liability that cannot lawfully be limited or indemnified. This clause shall survive expiry or termination of the Agreement in respect of events occurring before or in connection with that expiry or termination.</p>
+<h2 class="sec-heading">17. DISPUTE RESOLUTION</h2>
+<p class="clause lvl-0"><span class="num">A.</span> If any dispute, difference, or claim arises out of or in connection with this Agreement, including any question regarding its existence, interpretation, performance, breach, or termination (a “<strong>Dispute</strong>”), the Parties shall first attempt to resolve it amicably. Either Party may give the other written notice describing the Dispute, and authorised representatives of both Parties shall use good-faith efforts to resolve it within <strong>thirty (30) days</strong> from the date the notice is received.</p>
+<p class="clause lvl-0"><span class="num">B.</span> If the Parties fail to resolve the Dispute within the aforesaid period of thirty (30) days, the Dispute shall be referred to and finally resolved by arbitration in accordance with the Arbitration and Conciliation Act, 1996, as amended from time to time. The arbitration shall be conducted by a sole arbitrator appointed by the Company, and the Retailer expressly agrees to such appointment mechanism and waives any objection thereto, to the extent permissible under applicable law. The arbitration proceedings shall be conducted strictly in accordance with the provisions of the said Act. If the appointment of the arbitrator by the Company is challenged or cannot be effectuated under applicable law, either Party may seek the appointment of the sole arbitrator in accordance with the provisions of the said Act. The arbitral award shall be final and binding upon the Parties, subject to applicable law.</p>
+<p class="clause lvl-0"><span class="num">C.</span> The <strong>seat and venue of arbitration shall be New Delhi, India</strong>, and the arbitration proceedings shall be conducted in English in accordance with the Act. </p>
+<p class="clause lvl-0"><span class="num">D.</span> The arbitrator’s award shall be in writing, reasoned, and final and binding on the Parties. The arbitrator may allocate the costs of arbitration in the award. Nothing in this clause prevents either Party from seeking urgent interim or conservatory relief from a court of competent jurisdiction.</p>
+<h2 class="sec-heading">18. NOTICES AND COMMUNICATIONS</h2>
+<p class="clause lvl-0"><span class="num">A.</span> That any notice, communication, approval, request, or other correspondence under this Agreement may be given in writing by hand delivery, recognised courier, registered post, or electronic means, including email, SMS, or a notice or message delivered through the portal. A notice may be sent to the Retailer using the address, email address, mobile number, or portal account provided by the Retailer in this Agreement or during registration</p>
+<p class="clause lvl-0"><span class="num">B.</span> A notice or communication sent to the Retailer’s registered address or contact details on record, or delivered to the Retailer’s account on the portal, shall constitute valid service under this Agreement. The Retailer shall not dispute the validity of service solely because the notice was sent electronically or through the portal, provided it was sent to the contact details or account last provided by the Retailer. Electronic service shall be subject to applicable law. A notice received after normal business hours or on a non-business day shall be deemed received on the next business day.</p>
+<p class="clause lvl-0"><span class="num">C.</span> The Retailer shall promptly update its registered address and contact details through the portal or by written notice to the Company. Until the Company receives and records such update, the Company may rely on the details last provided by the Retailer, and communications sent to those details shall be treated as validly served in accordance with this clause.</p>
+<p class="clause lvl-0"><span class="num">D.</span> Notices to the Company shall be sent to its registered office or to the email address or other contact details it designates in writing or on the portal. This clause does not prevent either Party from using any additional method of service required by applicable law.</p>
+<h2 class="sec-heading">19. MISCELLANEOUS CLAUSES:</h2>
+<p class="clause lvl-0"><span class="num">A.</span> <u>Governing Law and Jurisdiction</u>. This Agreement and any non-contractual obligations arising out of or in connection with it shall be governed by the laws of India. Subject to the Dispute Resolution clause, the courts at New Delhi, India shall have exclusive jurisdiction over any court proceedings arising out of or in connection with this Agreement, including proceedings for interim relief or in support of arbitration.</p>
+<p class="clause lvl-0"><span class="num">B.</span> <u>Amendment and Modification</u>. This Agreement may be amended only by a written instrument accepted by both Parties, including an amendment executed electronically or through the portal. A change to service terms, fees, or operating procedures may also be made in the manner expressly permitted elsewhere in this Agreement. No oral statement or discussion shall amend this Agreement.</p>
+<p class="clause lvl-0"><span class="num">C.</span> <u>Assignment and Transfer</u>. The Retailer shall not assign, transfer, delegate, or sublicense any of its rights or obligations under this Agreement without the Company’s prior written consent. Any attempted assignment or transfer in breach of this clause shall be void. The Company may assign or transfer this Agreement, in whole or in part, to an affiliate, successor, or entity acquiring all or substantially all of the business or assets relating to this Agreement, by giving notice to the Retailer.</p>
+<p class="clause lvl-0"><span class="num">D.</span> <u>Compliance with Laws</u>. Each Party shall comply with the laws applicable to it in performing its obligations under this Agreement. The Retailer shall also comply with all applicable laws and service-specific requirements when accessing the portal or using the Company’s products and services.</p>
+<p class="clause lvl-0"><span class="num">E.</span> <u>Severability</u>. If any provision of this Agreement is held to be invalid, unlawful, or unenforceable, that provision shall be modified to the minimum extent necessary to make it valid and enforceable, where permitted by law. If it cannot be so modified, it shall be severed, and the remaining provisions shall continue in full force and effect.</p>
+<p class="clause lvl-0"><span class="num">F.</span> <u>Entire Agreement</u>. This Agreement, together with any schedules, addenda, service terms, or written offers incorporated into it, constitutes the entire agreement between the Parties concerning its subject matter and supersedes all prior discussions, understandings, and agreements relating to that subject matter.</p>
+<p class="clause lvl-0"><span class="num">G.</span> <u>Waiver</u>. A Party’s failure or delay in exercising a right or remedy under this Agreement shall not operate as a waiver of that or any other right or remedy. A waiver shall be effective only if made expressly in writing by the Party granting it and shall apply only to the specific instance for which it is given.</p>
+<p class="clause lvl-0"><span class="num">H.</span> <u>Successors and Permitted Assigns</u>. This Agreement shall bind and benefit the Parties and their respective successors and permitted assigns. No person other than a Party and its permitted successors or assigns shall have any right to enforce this Agreement, except as expressly stated in it.</p>
+<h2 class="sec-heading">20. EFFECT OF DIGITAL SIGNATURE PROCESS</h2>
+<p class="clause lvl-0"><span class="num">A.</span> <u>Review and Acceptance</u>: The instant agreement is well available to the Retailer through the portal before execution. The Retailer confirms that it has had the opportunity to read and understand this Agreement and agrees to be bound by its terms by completing the electronic signing process provided through the portal.</p>
+<p class="clause lvl-0"><span class="num">B.</span> <u>Electronic Execution</u>: The Retailer execute this Agreement electronically through the portal using an Aadhaar-based eSign process, where available, or another electronic signature method accepted by the Company and recognised under applicable law. The Retailer’s electronic signature, together with the related authentication and execution records maintained by the portal or its service provider, shall constitute evidence of the Retailer’s execution and acceptance of this Agreement.</p>
+<p class="clause lvl-0"><span class="num">C.</span> <u>Binding Effect</u>. Once electronically signed by the Parties, this Agreement shall be valid and binding on them as if signed in physical form, subject to applicable law. The Retailer shall not dispute the validity or binding effect of this Agreement solely because it was made available or signed electronically, or because no physical copy bearing handwritten signatures was executed.</p>
+<p class="clause lvl-0"><span class="num">D.</span> <u>Execution Records</u>. The Company may retain the electronically signed Agreement and associated records, including the date and time of signing, authentication details, and audit logs, in electronic form as evidence of execution, subject to applicable law.</p>
+<p class="para"><strong>IN WITNESS WHEREOF</strong>, the Parties have read and agreed to the terms of this Agreement and have executed it electronically through the portal. This Agreement shall take effect on the date on which the last Party electronically signs it.</p>
+
+<div class="page-break"></div>
+<h2 class="sec-heading">ANNEXURE A — SECOND PARTY (RETAILER) &amp; EXECUTION SCHEDULE</h2>
+<p class="para">This Annexure forms an integral part of the Master Service Agreement bearing reference number <strong>{{agreementNo}}</strong> between <strong>{{companyName}}</strong> (First Party) and <strong>{{partyName}}</strong> (Second Party / Retailer).</p>
+
+<table class="schedule-table">
+  <tr><th>Agreement Reference No.</th><td>{{agreementNo}}</td></tr>
+  <tr><th>Partner Code &amp; Role</th><td>{{partnerCode}} (Retailer)</td></tr>
+  <tr><th>Business Constitution</th><td>{{businessTypeLabel}}</td></tr>
+  <tr><th>Second Party Legal Name</th><td>{{partyLegalName}}</td></tr>
+  <tr><th>Shop / Trade Name</th><td>{{tradeName}}</td></tr>
+  <tr><th>CIN / Registration No.</th><td>{{cinNumber}}</td></tr>
+  <tr><th>PAN (Masked)</th><td>{{maskedPan}}</td></tr>
+  <tr><th>Registered / Work Address</th><td>{{partyAddress}}</td></tr>
+  <tr><th>Authorised Signatory Name</th><td>{{signatoryName}} ({{signatoryDesignation}})</td></tr>
+  <tr><th>Signatory Masked Aadhaar</th><td>{{signatoryMaskedAadhaar}}</td></tr>
+  <tr><th>Signatory Mobile &amp; Email</th><td>{{signatoryMobile}} / {{partnerEmail}}</td></tr>
+  <tr><th>One-Time Onboarding Fee</th><td>{{onboardingFee}}</td></tr>
+  <tr><th>Place of Execution</th><td>{{companyPlace}}</td></tr>
+</table>
+
+<h2 class="sec-heading">EXECUTION &amp; SIGNATURES</h2>
+<p class="para">IN WITNESS WHEREOF, the Parties hereto have caused this Master Service Agreement to be executed through their duly authorised signatories on the date recorded below.</p>
+
+<table class="sig-table">
+  <tr>
+    <td>
+      <strong>FOR AND ON BEHALF OF FIRST PARTY (COMPANY)</strong><br />
+      M/s. <strong>{{companyName}}</strong>
+      <div class="sig-box">
+        Digitally Approved &amp; Released via Portal<br />
+        <strong>Authorised Signatory:</strong> {{companySignatory}}<br />
+        <strong>Board Resolution Dated:</strong> {{companyBoardResolutionDate}}<br />
+        <strong>Status:</strong> {{releaseStamp}}
+      </div>
+      <strong>Name:</strong> {{companySignatory}}<br />
+      <strong>Designation:</strong> Authorised Signatory
+    </td>
+    <td>
+      <strong>FOR AND ON BEHALF OF SECOND PARTY (RETAILER)</strong><br />
+      <strong>{{partyName}}</strong>
+      <div class="sig-box">
+        [Aadhaar eSign / Physical Signature &amp; Stamp of Authorised Signatory]<br /><br />
+        <strong>Signatory:</strong> {{signatoryName}}
+      </div>
+      <strong>Name:</strong> {{signatoryName}}<br />
+      <strong>Capacity:</strong> {{signatoryDesignation}}
+    </td>
+  </tr>
+</table>
+</body>
+</html>

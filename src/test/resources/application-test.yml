@@ -21,17 +21,18 @@ app:
       mobile: "9000000001"
       full-name: Test Super Admin
       email: admin@gfinpay.test
-  paysprint:
-    base-url: http://localhost
-    partner-id: test
-    merchant-code: test
-    jwt-key: test-jwt-key
-    authorised-key: test-authorised-key
-    aes-key: "1234567890123456"
-    aes-iv: "1234567890123456"
-    callback-secret: test-callback
   cors:
     allow-all-origins: false
     allowed-origins: http://localhost:3001
   otp:
     demo: true
+  pii:
+    key: test-pii-key-32-bytes-minimum-key!
+  sms:
+    provider: mock
+  surepass:
+    mode: mock
+  onboarding:
+    otp-secret: test-otp-hmac-secret-key-for-tests
+    invite-ttl-days: 7
+    session-ttl-minutes: 60

@@ -51,13 +51,15 @@ public class DeskController {
 
     private final DeskService desk;
     private final PlatformServiceGate platformServices;
-    private final RetailerPaysprintEkycService paysprintEkyc;
+    private final com.fintech.ledger.TransactionStatusVerificationService statusVerification;
 
-    public DeskController(DeskService desk, PlatformServiceGate platformServices,
-                          RetailerPaysprintEkycService paysprintEkyc) {
+    public DeskController(
+            DeskService desk,
+            PlatformServiceGate platformServices,
+            com.fintech.ledger.TransactionStatusVerificationService statusVerification) {
         this.desk = desk;
         this.platformServices = platformServices;
-        this.paysprintEkyc = paysprintEkyc;
+        this.statusVerification = statusVerification;
     }
 
     @GetMapping("/platform-services")
@@ -91,32 +93,6 @@ public class DeskController {
     @PreAuthorize("hasAuthority('reports.view')")
     public ApiResponse<Map<String, Object>> outlet(@AuthenticationPrincipal AuthPrincipal me, @PathVariable UUID id) {
         return ApiResponse.ok(desk.getOutlet(me, id));
-    }
-
-    @PostMapping("/outlets/{id}/paysprint-onboard")
-    @PreAuthorize("hasAuthority('outlets.manage')")
-    public ApiResponse<Map<String, Object>> paysprintOnboard(@AuthenticationPrincipal AuthPrincipal me,
-                                                             @PathVariable UUID id,
-                                                             @RequestBody(required = false) Map<String, String> body) {
-        desk.getOutlet(me, id);
-        String email = body == null ? null : body.get("email");
-        return ApiResponse.ok(paysprintEkyc.issue(id, email));
-    }
-
-    @PostMapping("/outlets/{id}/paysprint-onboard/status")
-    @PreAuthorize("hasAuthority('outlets.manage')")
-    public ApiResponse<Map<String, Object>> paysprintOnboardStatus(@AuthenticationPrincipal AuthPrincipal me,
-                                                                   @PathVariable UUID id) {
-        desk.getOutlet(me, id);
-        return ApiResponse.ok(paysprintEkyc.checkStatus(id));
-    }
-
-    @PostMapping("/outlets/{id}/paysprint-onboard/refresh")
-    @PreAuthorize("hasAuthority('outlets.manage')")
-    public ApiResponse<Map<String, Object>> paysprintOnboardRefresh(@AuthenticationPrincipal AuthPrincipal me,
-                                                                    @PathVariable UUID id) {
-        desk.getOutlet(me, id);
-        return ApiResponse.ok(paysprintEkyc.refreshOnboardUrl(id));
     }
 
     @GetMapping("/outlets/{id}/performance")
@@ -176,6 +152,14 @@ public class DeskController {
     public ApiResponse<Map<String, Object>> transaction(@AuthenticationPrincipal AuthPrincipal me,
                                                         @PathVariable UUID id) {
         return ApiResponse.ok(desk.getTransaction(me, id));
+    }
+
+    @PostMapping("/transactions/{id}/verify-status")
+    @PreAuthorize("hasAuthority('wallet.view')")
+    public ApiResponse<Map<String, Object>> verifyTransactionStatus(
+            @AuthenticationPrincipal AuthPrincipal me,
+            @PathVariable UUID id) {
+        return ApiResponse.ok(statusVerification.verifyForDesk(me, id));
     }
 
     @GetMapping("/kyc")

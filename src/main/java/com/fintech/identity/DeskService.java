@@ -27,7 +27,7 @@ public class DeskService {
     private static final String IST_MONTH =
             "date_trunc('month', created_at AT TIME ZONE 'Asia/Kolkata') = date_trunc('month', now() AT TIME ZONE 'Asia/Kolkata')";
     private static final String SERVICE_TYPES = """
-            ARRAY['DMT','CASHOUT_UPI','CASHOUT_AEPS','FD_CARD_FEE','WALLET_TOPUP','BBPS']::text[]
+            ARRAY['DMT','CASHOUT_UPI','CASHOUT_AEPS','PAYOUT','FD_CARD_FEE','WALLET_TOPUP','BBPS']::text[]
             """;
 
     private final JdbcTemplate jdbc;
@@ -245,9 +245,17 @@ public class DeskService {
                        u.status::text AS status, u.created_at, u.created_by, u.parent_id, u.hub_id,
                        c.full_name AS created_by_name, c.code AS created_by_code,
                        h.name AS hub_name, k.shop_name, k.kyc_status::text AS kyc_status, k.bank_status,
-                       k.shop_address->>'city' AS retailer_city,
-                       k.shop_address->>'state' AS retailer_state,
-                       k.shop_address->>'pincode' AS retailer_pincode,
+                       COALESCE(k.identity_status, 'NOT_VERIFIED') AS identity_status,
+                       COALESCE(k.bank_verification_status, 'NOT_VERIFIED') AS bank_verification_status,
+                       COALESCE(k.personal_status, 'NOT_VERIFIED') AS personal_status,
+                       COALESCE(k.business_status, 'NOT_VERIFIED') AS business_status,
+                       COALESCE(k.agreement_status, 'NOT_SIGNED') AS agreement_status,
+                       COALESCE(k.personal_identity_verified, FALSE) AS personal_identity_verified,
+                       COALESCE(k.business_verified, FALSE) AS business_verified,
+                       COALESCE(k.face_review_status, 'PENDING') AS face_review_status,
+                       COALESCE(k.shop_address->>'city', k.personal_details->'permanentAddress'->>'city', k.personal_details->>'city') AS retailer_city,
+                       COALESCE(k.shop_address->>'state', k.personal_details->'permanentAddress'->>'state', k.personal_details->>'state') AS retailer_state,
+                       COALESCE(k.shop_address->>'pincode', k.personal_details->'permanentAddress'->>'pincode', k.personal_details->>'pincode') AS retailer_pincode,
                        w.available_balance, w.hold_balance, w.status AS wallet_status,
                        COALESCE((
                            SELECT sum(t.amount) FROM transactions t
@@ -275,6 +283,9 @@ public class DeskService {
     public Map<String, Object> getOutlet(AuthPrincipal me, UUID id) {
         Map<String, Object> user = admin.getUser(id);
         assertVisible(me, user);
+        if (isDistributor(me) && !me.userId().equals(id)) {
+            return sanitizeOutletForDistributor(me, user);
+        }
         return user;
     }
 
@@ -343,9 +354,8 @@ public class DeskService {
     public Map<String, Object> createOutlet(AuthPrincipal me, String fullName, String mobile, String email,
                                             String password, String city, String state, String pincode) {
         requireDistributor(me);
-        log.info("DESK_ONBOARD_OUTLET dist={} mobile={}", me.userId(), mobile);
-        return admin.createRetailer(fullName, mobile, email, password, me.userId(), city, state, pincode,
-                me.userId());
+        throw ApiException.of(HttpStatus.FORBIDDEN, "USE_ONBOARDING_INVITE",
+                "Distributors can only onboard retailers by sending a self-service onboarding link");
     }
 
     @Transactional
@@ -365,18 +375,14 @@ public class DeskService {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_STATUS",
                     "Only an active retailer can be marked inactive");
         }
-        return admin.updateStatus(outletId, status);
+        return sanitizeOutletForDistributor(me, admin.updateStatus(outletId, status));
     }
 
     @Transactional
     public Map<String, Object> resetOutletPassword(AuthPrincipal me, UUID outletId, String password) {
         requireDistributor(me);
-        Map<String, Object> user = admin.getUser(outletId);
-        assertVisible(me, user);
-        if (!"RETAILER".equals(String.valueOf(user.get("user_type")))) {
-            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "You can only reset outlet passwords");
-        }
-        return admin.resetPassword(outletId, password);
+        throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN",
+                "Distributors cannot reset retailer credentials");
     }
 
     @Transactional
@@ -387,7 +393,7 @@ public class DeskService {
         if (!"RETAILER".equals(String.valueOf(user.get("user_type")))) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "You can only freeze an outlet till");
         }
-        return admin.setWalletFrozen(outletId, frozen);
+        return sanitizeOutletForDistributor(me, admin.setWalletFrozen(outletId, frozen));
     }
 
     @Transactional
@@ -399,7 +405,7 @@ public class DeskService {
         if (!"RETAILER".equals(String.valueOf(user.get("user_type")))) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "You can only adjust an outlet till");
         }
-        return admin.adjustWallet(outletId, amount, direction, narration);
+        return sanitizeOutletForDistributor(me, admin.adjustWallet(outletId, amount, direction, narration));
     }
 
     public List<Map<String, Object>> listTransactions(AuthPrincipal me) {
@@ -413,7 +419,10 @@ public class DeskService {
                  WHERE %s
                  ORDER BY t.created_at DESC
                  LIMIT 200
-                """.formatted(net.sql), net.args);
+                """.formatted(net.sql), net.args)
+                .stream()
+                .map(DeskService::sanitizePartnerTransaction)
+                .toList();
     }
 
     public Map<String, Object> getTransaction(AuthPrincipal me, UUID id) {
@@ -429,27 +438,91 @@ public class DeskService {
         } else if (!me.userId().equals(agentId)) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Transaction is not yours");
         }
-        return txn;
+        return sanitizePartnerTransaction(txn);
+    }
+
+    private static Map<String, Object> sanitizePartnerTransaction(Map<String, Object> raw) {
+        Map<String, Object> copy = new LinkedHashMap<>(raw);
+        copy.remove("partner_code");
+        Object reason = copy.get("failure_reason");
+        if (reason != null) {
+            copy.put("failure_reason", com.fintech.emerald.EmeraldMessageSanitizer.sanitizeNullable(String.valueOf(reason)));
+        }
+        return copy;
     }
 
     public List<Map<String, Object>> listKyc(AuthPrincipal me) {
         if (isDistributor(me)) {
-            return admin.listKyc(me.userId(), null, PageWindow.DEFAULT_LIMIT, 0);
+            return admin.listKyc(me.userId(), null, PageWindow.DEFAULT_LIMIT, 0).stream()
+                    .map(DeskService::sanitizeKycSummaryForDistributor)
+                    .toList();
         }
         return admin.listKyc(null, me.userId(), PageWindow.DEFAULT_LIMIT, 0);
     }
 
     public Map<String, Object> getKyc(AuthPrincipal me, UUID userId) {
-        Map<String, Object> row = admin.getKyc(userId);
-        if (isDistributor(me)) {
-            Object dist = row.get("distributor_id");
-            if (!me.userId().equals(dist) && !me.userId().toString().equals(String.valueOf(dist))) {
-                throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "KYC is outside your network");
-            }
-        } else if (!me.userId().equals(userId)) {
-            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "KYC is not yours");
+        if (!me.userId().equals(userId)) {
+            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN",
+                    "Distributors cannot view retailer KYC documents or sensitive information");
         }
-        return row;
+        return admin.getKyc(userId);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> sanitizeOutletForDistributor(AuthPrincipal me, Map<String, Object> rawUser) {
+        Map<String, Object> out = new LinkedHashMap<>(rawUser);
+        out.remove("aadhaar_pan_linked");
+        Object kycObj = out.get("kyc");
+        if (kycObj instanceof Map<?, ?> kycRaw) {
+            Map<String, Object> safeKyc = new LinkedHashMap<>();
+            for (String key : List.of(
+                    "shop_name", "kyc_status", "identity_status", "personal_status",
+                    "business_status", "agreement_status", "bank_verification_status",
+                    "personal_identity_verified", "business_verified", "face_review_status",
+                    "entity_type", "city", "state", "pincode", "created_at")) {
+                if (kycRaw.containsKey(key)) {
+                    safeKyc.put(key, kycRaw.get(key));
+                }
+            }
+            out.put("kyc", safeKyc);
+        }
+        Object activationObj = out.get("activation");
+        if (activationObj instanceof Map<?, ?> actRaw) {
+            Map<String, Object> safeAct = new LinkedHashMap<>((Map<String, Object>) actRaw);
+            safeAct.put("canActivate", false);
+            Object latestObj = safeAct.get("latest");
+            if (latestObj instanceof Map<?, ?> latestRaw) {
+                Map<String, Object> safeLatest = new LinkedHashMap<>((Map<String, Object>) latestRaw);
+                safeLatest.remove("proof_key");
+                safeLatest.remove("payout_account_id");
+                safeLatest.remove("payout_bank_name");
+                safeLatest.remove("payout_account_name");
+                safeLatest.remove("payout_account_number");
+                safeLatest.remove("payout_ifsc");
+                if (!me.userId().equals(safeLatest.get("requested_by"))) {
+                    safeLatest.remove("proof_filename");
+                    safeLatest.remove("proof_content_type");
+                }
+                safeAct.put("latest", safeLatest);
+            }
+            out.put("activation", safeAct);
+        }
+        Object txnsObj = out.get("recentTransactions");
+        if (txnsObj instanceof List<?> txns) {
+            out.put("recentTransactions", txns.stream()
+                    .filter(Map.class::isInstance)
+                    .map(t -> sanitizePartnerTransaction((Map<String, Object>) t))
+                    .toList());
+        }
+        return out;
+    }
+
+    private static Map<String, Object> sanitizeKycSummaryForDistributor(Map<String, Object> raw) {
+        Map<String, Object> out = new LinkedHashMap<>(raw);
+        out.remove("aadhaar_last4");
+        out.remove("gstin");
+        out.remove("rejection_reason");
+        return out;
     }
 
     public Map<String, Object> earnings(AuthPrincipal me) {

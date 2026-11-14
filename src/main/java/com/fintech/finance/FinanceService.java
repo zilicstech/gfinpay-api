@@ -4,12 +4,14 @@ import com.fintech.identity.AdminAccess;
 import com.fintech.ledger.LedgerService;
 import com.fintech.ledger.TransactionService;
 import com.fintech.ledger.WalletService;
+import com.fintech.onboarding.JourneyTracker;
 import com.fintech.persistence.finance.FinanceRequestRepository;
 import com.fintech.persistence.identity.UserRepository;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiException;
 import com.fintech.platform.web.PageWindow;
 import com.fintech.storage.SpacesStorage;
+import com.fintech.verification.VerificationGate;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -75,11 +77,14 @@ public class FinanceService {
 
     private final FinanceRequestRepository financeRequests;
     private final UserRepository users;
+    private final VerificationGate verificationGate;
+    private final JourneyTracker journeyTracker;
 
     public FinanceService(JdbcTemplate jdbc, AdminAccess access, SpacesStorage spaces,
                           WalletService walletService, LedgerService ledgerService,
                           TransactionService transactionService,
-                          FinanceRequestRepository financeRequests, UserRepository users) {
+                          FinanceRequestRepository financeRequests, UserRepository users,
+                          VerificationGate verificationGate, JourneyTracker journeyTracker) {
         this.jdbc = jdbc;
         this.access = access;
         this.spaces = spaces;
@@ -88,6 +93,8 @@ public class FinanceService {
         this.transactionService = transactionService;
         this.financeRequests = financeRequests;
         this.users = users;
+        this.verificationGate = verificationGate;
+        this.journeyTracker = journeyTracker;
     }
 
     @Transactional
@@ -138,6 +145,7 @@ public class FinanceService {
         UUID collectionId = null;
         String mode = null;
         if (WALLET_TOPUP.equals(kind)) {
+            verificationGate.requireBank(target);
             collectionId = requireCollectionAccount(collectionAccountId);
             mode = transferMode(transferMode);
         }
@@ -159,6 +167,9 @@ public class FinanceService {
         }
         if (ACTIVATION.equals(kind)) {
             users.updateStatus(target, "SUBMITTED");
+            journeyTracker.recordUserMilestone(
+                    target, JourneyTracker.ACTIVATION_SUBMITTED, "SUCCESS",
+                    Map.of("requestId", id.toString(), "amount", amount, "utr", ref));
         }
         log.info("FINANCE_SUBMIT id={} kind={} retailer={} by={}", id, kind, target, me.userId());
         return get(me, id);
@@ -179,6 +190,7 @@ public class FinanceService {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "USER_NOT_ACTIVE",
                     "Rewards can be withdrawn after the account is active");
         }
+        verificationGate.requireBusiness(me.userId());
         WalletService.WalletInfo wallet = walletService.getRewards(me.userId());
         if (wallet.available().compareTo(amount) < 0) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INSUFFICIENT_BALANCE",
@@ -232,17 +244,34 @@ public class FinanceService {
         sql.append(auditorId == null
                 ? " ORDER BY f.created_at DESC LIMIT 500 "
                 : " ORDER BY f.reviewed_at DESC NULLS LAST, f.created_at DESC LIMIT 500 ");
-        return jdbc.queryForList(sql.toString(), args.toArray());
+        return jdbc.queryForList(sql.toString(), args.toArray()).stream()
+                .map(r -> sanitizeFinanceRow(me, r))
+                .toList();
     }
 
     public Map<String, Object> get(AuthPrincipal me, UUID id) {
         Map<String, Object> row = one(id);
-        assertCanViewRetailer(me, (UUID) row.get("retailer_user_id"));
-        return row;
+        UUID targetId = (UUID) row.get("retailer_user_id");
+        assertCanViewRetailer(me, targetId);
+        if ("MASTER_DISTRIBUTOR".equals(me.userType())
+                && !me.userId().equals(targetId)
+                && EARNINGS_WITHDRAW.equals(String.valueOf(row.get("kind")))) {
+            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN",
+                    "Distributors cannot view retailer withdrawal requests");
+        }
+        return sanitizeFinanceRow(me, row);
     }
 
     public Map<String, Object> proofUrl(AuthPrincipal me, UUID id) {
-        Map<String, Object> row = get(me, id);
+        Map<String, Object> row = one(id);
+        UUID targetId = (UUID) row.get("retailer_user_id");
+        assertCanViewRetailer(me, targetId);
+        if ("MASTER_DISTRIBUTOR".equals(me.userType())
+                && !me.userId().equals(targetId)
+                && !me.userId().equals(row.get("requested_by"))) {
+            throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN",
+                    "Distributors cannot view documents uploaded by retailers");
+        }
         String key = (String) row.get("proof_key");
         if (key == null || key.startsWith("earnings-withdraw/") || row.get("proof_filename") == null) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "PROOF_NOT_FOUND", "This request has no uploaded proof");
@@ -274,7 +303,13 @@ public class FinanceService {
         }
         financeRequests.markReceived(id, me.userId(), blankToNull(notes), txnId);
         if (ACTIVATION.equals(kind)) {
-            users.updateStatus(retailerId, "APPROVED");
+            users.updateStatus(retailerId, "ACTIVE");
+            journeyTracker.recordUserMilestone(
+                    retailerId, JourneyTracker.ACTIVATION_APPROVED, "SUCCESS",
+                    Map.of("requestId", id.toString(), "reviewedBy", me.userId().toString()));
+            journeyTracker.recordUserMilestone(
+                    retailerId, JourneyTracker.ACTIVATED, "SUCCESS",
+                    Map.of("requestId", id.toString(), "activatedBy", me.userId().toString()));
         }
         log.info("FINANCE_RECEIVED id={} kind={} retailer={} txnId={}", id, kind, retailerId, txnId);
         return one(id);
@@ -290,7 +325,11 @@ public class FinanceService {
         }
         financeRequests.markRejected(id, me.userId(), blankToNull(notes));
         if (ACTIVATION.equals(String.valueOf(row.get("kind")))) {
-            users.updateStatus((UUID) row.get("retailer_user_id"), "REJECTED");
+            UUID retailerId = (UUID) row.get("retailer_user_id");
+            users.updateStatus(retailerId, "REJECTED");
+            journeyTracker.recordUserMilestone(
+                    retailerId, JourneyTracker.ACTIVATION_REJECTED, "FAILURE",
+                    Map.of("requestId", id.toString(), "notes", notes == null ? "" : notes));
         }
         log.info("FINANCE_REJECTED id={} by={}", id, me.userId());
         return one(id);
@@ -509,9 +548,9 @@ public class FinanceService {
     }
 
     private void assertCanActivate(AuthPrincipal me, UUID retailerId) {
-        if (!(me.platformStaff() || "MASTER_DISTRIBUTOR".equals(me.userType()))) {
+        if (!me.platformStaff()) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN",
-                    "Only an admin or the retailer's distributor can activate");
+                    "Only a platform admin can activate a retailer");
         }
         access.assertNetworkUser(retailerId);
         retailerRow(retailerId);
@@ -536,7 +575,7 @@ public class FinanceService {
             return;
         }
         if ("MASTER_DISTRIBUTOR".equals(me.userType())) {
-            sql.append(" AND (r.parent_id = ? OR f.retailer_user_id = ?) ");
+            sql.append(" AND (f.retailer_user_id = ? OR (r.parent_id = ? AND f.kind <> 'EARNINGS_WITHDRAW')) ");
             args.add(me.userId());
             args.add(me.userId());
             return;
@@ -547,6 +586,24 @@ public class FinanceService {
             return;
         }
         throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "Not allowed");
+    }
+
+    private static Map<String, Object> sanitizeFinanceRow(AuthPrincipal me, Map<String, Object> row) {
+        Map<String, Object> out = new LinkedHashMap<>(row);
+        out.remove("proof_key");
+        if (me != null && "MASTER_DISTRIBUTOR".equals(me.userType())
+                && !me.userId().equals(out.get("retailer_user_id"))) {
+            out.remove("payout_account_id");
+            out.remove("payout_bank_name");
+            out.remove("payout_account_name");
+            out.remove("payout_account_number");
+            out.remove("payout_ifsc");
+            if (!me.userId().equals(out.get("requested_by"))) {
+                out.remove("proof_filename");
+                out.remove("proof_content_type");
+            }
+        }
+        return out;
     }
 
     private void requireReviewer(AuthPrincipal me) {
@@ -651,13 +708,17 @@ public class FinanceService {
         }
         try {
             Map<String, Object> row = jdbc.queryForMap(
-                    "SELECT user_id, active FROM retailer_bank_accounts WHERE id = ?", id);
+                    "SELECT user_id, active, verification_status FROM retailer_bank_accounts WHERE id = ?", id);
             if (!userId.equals(row.get("user_id"))) {
                 throw ApiException.of(HttpStatus.FORBIDDEN, "FORBIDDEN", "This bank account is not yours");
             }
             if (!Boolean.TRUE.equals(row.get("active"))) {
                 throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "BANK_INACTIVE",
                         "This bank account is not active");
+            }
+            if (!"VERIFIED".equals(String.valueOf(row.get("verification_status")))) {
+                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "BANK_NOT_VERIFIED",
+                        "Verify this bank account before requesting a withdrawal");
             }
             return id;
         } catch (EmptyResultDataAccessException e) {

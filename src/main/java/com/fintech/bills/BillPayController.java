@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiException;
 import com.fintech.platform.web.ApiResponse;
+import com.fintech.verification.VerificationGate;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
@@ -48,10 +49,12 @@ public class BillPayController {
 
     private final BillPayService bills;
     private final ObjectMapper mapper;
+    private final VerificationGate verification;
 
-    public BillPayController(BillPayService bills, ObjectMapper mapper) {
+    public BillPayController(BillPayService bills, ObjectMapper mapper, VerificationGate verification) {
         this.bills = bills;
         this.mapper = mapper;
+        this.verification = verification;
     }
 
     @GetMapping("/categories")
@@ -84,7 +87,9 @@ public class BillPayController {
 
     @PostMapping("/fetch")
     @PreAuthorize("hasAnyAuthority('bills.pay','dmt.initiate')")
-    public ApiResponse<Map<String, Object>> fetch(@Valid @RequestBody FetchRequest req) {
+    public ApiResponse<Map<String, Object>> fetch(@AuthenticationPrincipal AuthPrincipal me,
+                                                 @Valid @RequestBody FetchRequest req) {
+        verification.requireIdentity(me.userId());
         return ApiResponse.ok(bills.fetch(req.categoryId(), req.operatorId(), req.consumerNumber(),
                 req.customerMobile(), req.senderName(), req.extraParams()));
     }
@@ -96,6 +101,7 @@ public class BillPayController {
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestHeader(value = "X-Agent-Id", required = false) String agentIdHeader,
             @Valid @RequestBody PayRequest req) throws Exception {
+        verification.requireIdentity(me.userId());
         if (agentIdHeader != null && !agentIdHeader.isBlank() && !me.userId().toString().equals(agentIdHeader)) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "PERMISSION_DENIED",
                     "X-Agent-Id does not match the authenticated user");

@@ -7,7 +7,6 @@ import com.fintech.commission.CommissionEngine;
 import com.fintech.ledger.LedgerService;
 import com.fintech.ledger.TransactionService;
 import com.fintech.ledger.WalletService;
-import com.fintech.paysprint.PaysprintMessages;
 import com.fintech.platform.idempotency.IdempotencyService;
 import com.fintech.platform.web.ApiException;
 import java.math.BigDecimal;
@@ -177,13 +176,13 @@ public class DmtCasaLedger {
         UUID agentId = (UUID) row.get("agent_user_id");
         log.info("DMT_CASA apply txnId={} referenceid={} txn_status={} response_code={} from={} message={}",
                 txnId, DmtCasaTexts.text(root, "referenceid"), txnStatus, DmtCasaTexts.code(root), current,
-                DmtCasaTexts.clip(PaysprintMessages.fromNode(root, "")));
+                DmtCasaTexts.clip(partnerMessage(root, "")));
         switch (txnStatus) {
             case "1" -> settle(txnId, agentId, walletId, (BigDecimal) row.get("amount"), current);
             case "0" -> reverse(txnId, walletId, total, current, refundState, "AUTO_REFUNDED",
-                    PaysprintMessages.fromNode(root, "Transfer failed and the amount was refunded"));
+                    partnerMessage(root, "Transfer failed and the amount was refunded"));
             case "5" -> failKept(txnId, current, refundState,
-                    PaysprintMessages.fromNode(root, "Transfer failed. Claim the refund to return the amount"));
+                    partnerMessage(root, "Transfer failed. Claim the refund to return the amount"));
             case "2", "3", "4" -> keepHold(txnId, txnStatus);
             default -> unresolved(txnId, walletId, total, current, refundState, root);
         }
@@ -230,7 +229,7 @@ public class DmtCasaLedger {
         boolean already = DmtCasaTexts.code(root) == 2;
         if (!accepted && !already) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "DMT_CASA_ERROR",
-                    PaysprintMessages.fromNode(root, "PaySprint did not refund this transfer"));
+                    partnerMessage(root, "PaySprint did not refund this transfer"));
         }
         BigDecimal total = ((BigDecimal) row.get("amount")).add((BigDecimal) row.get("fee"));
         creditBack((UUID) row.get("wallet_id"), txnId, total, "DMT refund");
@@ -238,7 +237,7 @@ public class DmtCasaLedger {
                 UPDATE dmt_transfers
                    SET refund_state = 'REFUNDED', status = 'REFUNDED', err_msg = ?, updated_at = now()
                  WHERE transaction_id = ?
-                """, DmtCasaTexts.clip(PaysprintMessages.fromNode(root, "Refunded")), txnId);
+                """, DmtCasaTexts.clip(partnerMessage(root, "Refunded")), txnId);
         log.info("DMT_CASA refunded txnId={} amount={}", txnId, total);
         return view(txnId);
     }
@@ -335,11 +334,11 @@ public class DmtCasaLedger {
     private void unresolved(UUID txnId, UUID walletId, BigDecimal total, String current, String refundState, JsonNode root) {
         if (DmtCasaTexts.code(root) == 2 && !"SUCCESS".equals(current)) {
             reverse(txnId, walletId, total, current, refundState, "AUTO_REFUNDED",
-                    PaysprintMessages.fromNode(root, "PaySprint has no record of this transfer"));
+                    partnerMessage(root, "PaySprint has no record of this transfer"));
             return;
         }
         if (!root.path("status").asBoolean(false) && !"SUCCESS".equals(current)) {
-            String reason = PaysprintMessages.fromNode(root, "PaySprint did not accept the transfer");
+            String reason = partnerMessage(root, "PaySprint did not accept the transfer");
             transactionService.transition(txnId, "FAILED", null, clip(reason));
             if ((open(current) || "CLAIM_REQUIRED".equals(refundState))
                     && !"AUTO_REFUNDED".equals(refundState) && !"REFUNDED".equals(refundState)) {
@@ -457,5 +456,10 @@ public class DmtCasaLedger {
 
     private static String clip(String value) {
         return DmtCasaTexts.clip(value);
+    }
+
+    private static String partnerMessage(JsonNode root, String fallback) {
+        String message = root.path("message").asText("");
+        return message.isBlank() ? fallback : message;
     }
 }

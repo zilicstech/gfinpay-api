@@ -118,7 +118,7 @@ public class FinanceController {
     }
 
     @PostMapping("/retailers/{id}/activate")
-    @PreAuthorize("hasAnyAuthority('users.onboard','outlets.manage')")
+    @PreAuthorize("hasAuthority('users.onboard')")
     public ApiResponse<Map<String, Object>> activate(@AuthenticationPrincipal AuthPrincipal me,
                                                      @PathVariable UUID id) {
         finance.activateRetailer(me, id);
