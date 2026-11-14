@@ -517,10 +517,10 @@ public class AdminPlatformService {
     }
 
     public List<Map<String, Object>> listUsers(String userType) {
-        return listUsers(userType, PageWindow.DEFAULT_LIMIT, 0);
+        return listUsers(userType, null, null);
     }
 
-    public List<Map<String, Object>> listUsers(String userType, int limit, int offset) {
+    public List<Map<String, Object>> listUsers(String userType, Integer limit, Integer offset) {
         if ("ADMIN".equals(userType) || "HUBADMIN".equals(userType) || "SUPER_ADMIN".equals(userType)
                 || "AUDITOR".equals(userType) || "ALL_ADMINS".equals(userType)) {
             access.requireSuperAdminOrPlatformAdmin();
@@ -543,9 +543,15 @@ public class AdminPlatformService {
         if ("MASTER_DISTRIBUTOR".equals(userType) || "RETAILER".equals(userType) || userType == null || userType.isBlank()) {
             access.appendHubFilter(sql, args, "u.hub_id");
         }
-        sql.append(" ORDER BY u.created_at DESC LIMIT ? OFFSET ?");
-        args.add(PageWindow.limit(limit));
-        args.add(PageWindow.offset(offset));
+        sql.append(" ORDER BY u.created_at DESC");
+        if (limit != null && limit > 0) {
+            sql.append(" LIMIT ?");
+            args.add(limit);
+        }
+        if (offset != null && offset > 0) {
+            sql.append(" OFFSET ?");
+            args.add(offset);
+        }
         return jdbc.queryForList(sql.toString(), args.toArray());
     }
 
@@ -902,10 +908,10 @@ public class AdminPlatformService {
     }
 
     public List<Map<String, Object>> listKyc() {
-        return listKyc(null, null, PageWindow.DEFAULT_LIMIT, 0);
+        return listKyc(null, null, null, null);
     }
 
-    public List<Map<String, Object>> listKyc(UUID distributorId, UUID userId, int limit, int offset) {
+    public List<Map<String, Object>> listKyc(UUID distributorId, UUID userId, Integer limit, Integer offset) {
         StringBuilder sql = new StringBuilder("""
                 SELECT k.user_id, u.full_name, u.mobile, u.status::text AS user_status,
                        k.shop_name, k.kyc_status::text AS kyc_status, k.bank_status, k.rejection_reason,
@@ -927,9 +933,15 @@ public class AdminPlatformService {
             sql.append(" AND k.user_id = ? ");
             args.add(userId);
         }
-        sql.append(" ORDER BY k.updated_at DESC LIMIT ? OFFSET ?");
-        args.add(PageWindow.limit(limit));
-        args.add(PageWindow.offset(offset));
+        sql.append(" ORDER BY k.updated_at DESC");
+        if (limit != null && limit > 0) {
+            sql.append(" LIMIT ?");
+            args.add(limit);
+        }
+        if (offset != null && offset > 0) {
+            sql.append(" OFFSET ?");
+            args.add(offset);
+        }
         return jdbc.queryForList(sql.toString(), args.toArray());
     }
 

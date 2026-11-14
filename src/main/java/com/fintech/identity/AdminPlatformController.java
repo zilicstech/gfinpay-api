@@ -224,7 +224,7 @@ public class AdminPlatformController {
     public ApiResponse<List<Map<String, Object>>> users(@RequestParam(required = false) String type,
                                                         @RequestParam(required = false) Integer limit,
                                                         @RequestParam(required = false) Integer offset) {
-        return ApiResponse.ok(admin.listUsers(type, PageWindow.limit(limit), PageWindow.offset(offset)));
+        return ApiResponse.ok(admin.listUsers(type, limit, offset));
     }
 
     @GetMapping("/users/{id}")
@@ -322,7 +322,7 @@ public class AdminPlatformController {
     @PreAuthorize("hasAuthority('users.onboard')")
     public ApiResponse<List<Map<String, Object>>> kyc(@RequestParam(required = false) Integer limit,
                                                       @RequestParam(required = false) Integer offset) {
-        return ApiResponse.ok(admin.listKyc(null, null, PageWindow.limit(limit), PageWindow.offset(offset)));
+        return ApiResponse.ok(admin.listKyc(null, null, limit, offset));
     }
 
     @GetMapping("/kyc/{userId}")

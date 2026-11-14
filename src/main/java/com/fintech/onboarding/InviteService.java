@@ -203,7 +203,7 @@ public class InviteService {
             sql.append(" AND i.role = ? ");
             args.add(role.trim().toUpperCase(Locale.ROOT));
         }
-        sql.append(" ORDER BY COALESCE(j.last_activity_at, i.created_at) DESC LIMIT 500");
+        sql.append(" ORDER BY COALESCE(j.last_activity_at, i.created_at) DESC");
         return jdbc.queryForList(sql.toString(), args.toArray()).stream()
                 .map(r -> hydrateRow(r, me))
                 .toList();

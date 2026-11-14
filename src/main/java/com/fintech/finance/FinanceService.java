@@ -411,11 +411,11 @@ public class FinanceService {
     }
 
     public List<Map<String, Object>> listRetailers() {
-        return listRetailers(PageWindow.DEFAULT_LIMIT, 0);
+        return listRetailers(null, null);
     }
 
-    public List<Map<String, Object>> listRetailers(int limit, int offset) {
-        return jdbc.queryForList("""
+    public List<Map<String, Object>> listRetailers(Integer limit, Integer offset) {
+        StringBuilder sql = new StringBuilder("""
                 SELECT u.id, u.full_name, u.mobile, u.code, u.status::text AS status, u.created_at,
                        u.parent_id, p.full_name AS parent_name, u.hub_id, h.name AS hub_name,
                        w.available_balance, w.hold_balance, w.status AS wallet_status
@@ -425,8 +425,17 @@ public class FinanceService {
                   LEFT JOIN wallets w ON w.user_id = u.id AND w.wallet_kind = 'MAIN'
                  WHERE u.user_type = 'RETAILER'
                  ORDER BY u.full_name
-                 LIMIT ? OFFSET ?
-                """, PageWindow.limit(limit), PageWindow.offset(offset));
+                """);
+        List<Object> args = new ArrayList<>();
+        if (limit != null && limit > 0) {
+            sql.append(" LIMIT ?");
+            args.add(limit);
+        }
+        if (offset != null && offset > 0) {
+            sql.append(" OFFSET ?");
+            args.add(offset);
+        }
+        return jdbc.queryForList(sql.toString(), args.toArray());
     }
 
     public Map<String, Object> getRetailer(UUID retailerId) {

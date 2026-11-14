@@ -55,7 +55,7 @@ public class AuditorController {
     @PreAuthorize("hasAuthority('finance.wallet.adjust')")
     public ApiResponse<List<Map<String, Object>>> retailers(@RequestParam(required = false) Integer limit,
                                                             @RequestParam(required = false) Integer offset) {
-        return ApiResponse.ok(finance.listRetailers(PageWindow.limit(limit), PageWindow.offset(offset)));
+        return ApiResponse.ok(finance.listRetailers(limit, offset));
     }
 
     @GetMapping("/retailers/{id}")

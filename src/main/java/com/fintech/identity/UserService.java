@@ -694,18 +694,27 @@ public class UserService {
     }
 
     public List<Map<String, Object>> listUsers() {
-        return listUsers(PageWindow.DEFAULT_LIMIT, 0);
+        return listUsers(null, null);
     }
 
-    public List<Map<String, Object>> listUsers(int limit, int offset) {
-        return jdbc.queryForList("""
+    public List<Map<String, Object>> listUsers(Integer limit, Integer offset) {
+        StringBuilder sql = new StringBuilder("""
                 SELECT u.id, u.user_type::text AS user_type, u.full_name, u.mobile, u.email, u.status::text AS status, u.created_at,
                        p.full_name AS parent_name, u.parent_id
                   FROM users u
                   LEFT JOIN users p ON p.id = u.parent_id
                  ORDER BY u.created_at DESC
-                 LIMIT ? OFFSET ?
-                """, PageWindow.limit(limit), PageWindow.offset(offset));
+                """);
+        List<Object> args = new java.util.ArrayList<>();
+        if (limit != null && limit > 0) {
+            sql.append(" LIMIT ?");
+            args.add(limit);
+        }
+        if (offset != null && offset > 0) {
+            sql.append(" OFFSET ?");
+            args.add(offset);
+        }
+        return jdbc.queryForList(sql.toString(), args.toArray());
     }
 
     private static String toAddressJson(String city, String state, String pincode) {

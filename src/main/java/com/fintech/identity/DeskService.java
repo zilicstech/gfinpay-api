@@ -453,11 +453,11 @@ public class DeskService {
 
     public List<Map<String, Object>> listKyc(AuthPrincipal me) {
         if (isDistributor(me)) {
-            return admin.listKyc(me.userId(), null, PageWindow.DEFAULT_LIMIT, 0).stream()
+            return admin.listKyc(me.userId(), null, null, null).stream()
                     .map(DeskService::sanitizeKycSummaryForDistributor)
                     .toList();
         }
-        return admin.listKyc(null, me.userId(), PageWindow.DEFAULT_LIMIT, 0);
+        return admin.listKyc(null, me.userId(), null, null);
     }
 
     public Map<String, Object> getKyc(AuthPrincipal me, UUID userId) {
