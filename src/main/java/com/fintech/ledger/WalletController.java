@@ -1,12 +1,21 @@
 package com.fintech.ledger;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fintech.finance.FinanceService;
+import com.fintech.platform.idempotency.ExternalRefs;
+import com.fintech.platform.idempotency.IdempotencyService;
 import com.fintech.platform.security.AuthPrincipal;
+import com.fintech.platform.web.ApiException;
 import com.fintech.platform.web.ApiResponse;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.NotNull;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -14,6 +23,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -21,7 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1")
 public class WalletController {
 
-    public record TransferRequest(BigDecimal amount) {}
+    public record TransferRequest(@NotNull @DecimalMin("0.01") BigDecimal amount) {}
 
     public record SettleRequest(BigDecimal amount, String remarks, UUID payoutAccountId) {}
 
@@ -29,13 +39,18 @@ public class WalletController {
     private final TransactionService transactionService;
     private final FinanceService finance;
     private final JdbcTemplate jdbc;
+    private final IdempotencyService idempotency;
+    private final ObjectMapper mapper;
 
     public WalletController(WalletService walletService, TransactionService transactionService,
-                            FinanceService finance, JdbcTemplate jdbc) {
+                            FinanceService finance, JdbcTemplate jdbc,
+                            IdempotencyService idempotency, ObjectMapper mapper) {
         this.walletService = walletService;
         this.transactionService = transactionService;
         this.finance = finance;
         this.jdbc = jdbc;
+        this.idempotency = idempotency;
+        this.mapper = mapper;
     }
 
     @PostMapping("/wallet/settle")
@@ -47,9 +62,26 @@ public class WalletController {
 
     @PostMapping("/wallet/rewards/transfer")
     @PreAuthorize("hasAuthority('wallet.view')")
-    public ApiResponse<Map<String, BigDecimal>> transferRewards(@AuthenticationPrincipal AuthPrincipal me,
-                                                                @RequestBody TransferRequest body) {
-        return ApiResponse.ok(walletService.transferRewardsToMain(me.userId(), body.amount()));
+    public ApiResponse<Map<String, BigDecimal>> transferRewards(
+            @AuthenticationPrincipal AuthPrincipal me,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @Valid @RequestBody TransferRequest body) {
+        String key = ExternalRefs.requireKey(idempotencyKey);
+        IdempotencyService.Claim claim = idempotency.claim(me.userId(), key, body.amount().toPlainString());
+        if (claim.replay()) {
+            try {
+                return ApiResponse.ok(mapper.readValue(claim.responseBody(), new TypeReference<>() {}));
+            } catch (Exception e) {
+                throw ApiException.of(HttpStatus.CONFLICT, "IDEMPOTENCY_REPLAY", "Stored response could not be read");
+            }
+        }
+        Map<String, BigDecimal> result = walletService.transferRewardsToMain(me.userId(), body.amount());
+        try {
+            idempotency.complete(claim.keyId(), 200, mapper.writeValueAsString(result));
+        } catch (Exception e) {
+            throw ApiException.of(HttpStatus.INTERNAL_SERVER_ERROR, "IDEMPOTENCY_STORE", "Could not store the transfer result");
+        }
+        return ApiResponse.ok(result);
     }
 
     @GetMapping("/wallet")

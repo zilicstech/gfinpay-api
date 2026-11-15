@@ -16,11 +16,14 @@ public class DmtCasaService {
 
     private final VerificationGate verification;
     private final DmtProvider provider;
+    private final DmtCasaLedger ledger;
     private final PlatformServiceGate services;
 
-    public DmtCasaService(VerificationGate verification, DmtProvider provider, PlatformServiceGate services) {
+    public DmtCasaService(VerificationGate verification, DmtProvider provider, DmtCasaLedger ledger,
+                          PlatformServiceGate services) {
         this.verification = verification;
         this.provider = provider;
+        this.ledger = ledger;
         this.services = services;
     }
 
@@ -74,7 +77,9 @@ public class DmtCasaService {
     private Map<String, Object> blocked(AuthPrincipal me) {
         services.requireEnabled(PlatformServiceGate.DMT);
         verification.requireBusiness(me.userId());
-        provider.execute();
+        if (!ledger.providerReady()) {
+            provider.execute();
+        }
         return Map.of();
     }
 }

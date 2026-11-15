@@ -2,6 +2,10 @@ package com.fintech.payout;
 
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiResponse;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
@@ -10,6 +14,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -18,8 +23,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class PayoutController {
 
     public record InitiatePayoutRequest(
-            BigDecimal amount,
-            String transferMode,
+            @NotNull @DecimalMin("0.01") BigDecimal amount,
+            @NotBlank String transferMode,
             String remarks,
             String latitude,
             String longitude
@@ -41,14 +46,16 @@ public class PayoutController {
     @PreAuthorize("hasAuthority('wallet.view')")
     public ApiResponse<Map<String, Object>> initiate(
             @AuthenticationPrincipal AuthPrincipal me,
-            @RequestBody InitiatePayoutRequest body) {
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @Valid @RequestBody InitiatePayoutRequest body) {
         return ApiResponse.ok(payouts.initiatePayout(
                 me,
                 body.amount(),
                 body.transferMode(),
                 body.remarks(),
                 body.latitude(),
-                body.longitude()));
+                body.longitude(),
+                idempotencyKey));
     }
 
     @GetMapping("/history")

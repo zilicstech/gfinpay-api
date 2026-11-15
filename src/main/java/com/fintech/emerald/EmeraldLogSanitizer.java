@@ -10,21 +10,24 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Sanitizes Emerald HTTP headers, request bodies, and response bodies for structured logging and persistent
- * audit storage while preserving 100% of structural fields, status codes, error details, RD device metadata,
- * reference keys, transaction IDs, and UTRs needed when sharing traces with the Emerald engineering team.
+ * Sanitizes Emerald HTTP headers, request bodies, and response bodies for
+ * structured logging and persistent
+ * audit storage while preserving 100% of structural fields, status codes, error
+ * details, RD device metadata,
+ * reference keys, transaction IDs, and UTRs needed when sharing traces with the
+ * Emerald engineering team.
  */
 public final class EmeraldLogSanitizer {
 
-    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
+    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
+    };
 
     private static final Set<String> SECRET_HEADERS = Set.of(
             "x-client-secret",
             "x-emerald-callback-secret",
             "authorization",
             "cookie",
-            "set-cookie"
-    );
+            "set-cookie");
 
     private static final Set<String> AADHAAR_KEYS = Set.of(
             "aadhaar",
@@ -33,8 +36,7 @@ public final class EmeraldLogSanitizer {
             "aadhaar_number",
             "encryptedaadhaar",
             "customeraadhaar",
-            "uid"
-    );
+            "uid");
 
     private static final Set<String> BIOMETRIC_CIPHERTEXT_KEYS = Set.of(
             "piddata",
@@ -45,10 +47,10 @@ public final class EmeraldLogSanitizer {
             "encskey",
             "sessionkey",
             "mc",
-            "pidxml"
-    );
+            "pidxml");
 
-    private EmeraldLogSanitizer() {}
+    private EmeraldLogSanitizer() {
+    }
 
     public static Map<String, String> sanitizeHeaders(Map<String, String> headers) {
         if (headers == null || headers.isEmpty()) {
@@ -58,7 +60,8 @@ public final class EmeraldLogSanitizer {
         for (Map.Entry<String, String> entry : headers.entrySet()) {
             String key = entry.getKey();
             String val = entry.getValue();
-            if (key == null) continue;
+            if (key == null)
+                continue;
             if (SECRET_HEADERS.contains(key.toLowerCase(Locale.ROOT))) {
                 out.put(key, maskSecret(val));
             } else {
@@ -138,14 +141,16 @@ public final class EmeraldLogSanitizer {
         }
 
         if (value instanceof String strVal) {
-            // 1. Inside biometricData map, `data` is the encrypted UIDAI PID block; keep all RD device attributes intact
+            // 1. Inside biometricData map, `data` is the encrypted UIDAI PID block; keep
+            // all RD device attributes intact
             if (insideBiometricMap && ("data".equalsIgnoreCase(key) || BIOMETRIC_CIPHERTEXT_KEYS.contains(normKey))) {
                 return "[REDACTED_BIOMETRIC len=" + strVal.length() + "]";
             }
             if (BIOMETRIC_CIPHERTEXT_KEYS.contains(normKey)) {
                 return "[REDACTED_BIOMETRIC len=" + strVal.length() + "]";
             }
-            // 2. Aadhaar numbers -> XXXXXXXX1234 in logs/storage (outbound wire payload always sends full 12-digit Aadhaar)
+            // 2. Aadhaar numbers -> XXXXXXXX1234 in logs/storage (outbound wire payload
+            // always sends full 12-digit Aadhaar)
             if (AADHAAR_KEYS.contains(normKey)) {
                 return maskAadhaar(strVal);
             }
@@ -182,7 +187,8 @@ public final class EmeraldLogSanitizer {
     }
 
     private static String truncateIfHuge(String raw) {
-        if (raw == null) return "";
+        if (raw == null)
+            return "";
         int max = 32_768;
         return raw.length() <= max ? raw : raw.substring(0, max) + "...[TRUNCATED totalLen=" + raw.length() + "]";
     }

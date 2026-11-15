@@ -4,7 +4,6 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fintech.biometric.RdPidXmlParser;
 import com.fintech.commission.CommissionEngine;
-import com.fintech.emerald.EmeraldClient;
 import com.fintech.emerald.EmeraldMessageSanitizer;
 import com.fintech.emerald.EmeraldTraceContext;
 import com.fintech.ledger.LedgerService;
@@ -13,7 +12,10 @@ import com.fintech.ledger.WalletService;
 import com.fintech.platform.PlatformServiceGate;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiException;
+import com.fintech.provider.ChannelLimits;
+import com.fintech.provider.ProviderDispatch;
 import com.fintech.provider.ServiceProviderRouter;
+import com.fintech.provider.canonical.ProviderModels;
 import com.fintech.verification.AadhaarValidator;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -61,8 +63,7 @@ public class AepsService {
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
     private final PlatformServiceGate services;
-    private final ServiceProviderRouter router;
-    private final EmeraldClient emeraldClient;
+    private final ProviderDispatch dispatch;
     private final WalletService walletService;
     private final LedgerService ledgerService;
     private final TransactionService transactionService;
@@ -72,8 +73,7 @@ public class AepsService {
             JdbcTemplate jdbc,
             ObjectMapper mapper,
             PlatformServiceGate services,
-            ServiceProviderRouter router,
-            EmeraldClient emeraldClient,
+            ProviderDispatch dispatch,
             WalletService walletService,
             LedgerService ledgerService,
             TransactionService transactionService,
@@ -81,8 +81,7 @@ public class AepsService {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.services = services;
-        this.router = router;
-        this.emeraldClient = emeraldClient;
+        this.dispatch = dispatch;
         this.walletService = walletService;
         this.ledgerService = ledgerService;
         this.transactionService = transactionService;
@@ -130,10 +129,15 @@ public class AepsService {
         }
 
         BigDecimal amount = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        ProviderDispatch.RoutedAeps route = dispatch.aeps(userId);
+        ServiceProviderRouter.RoutedChannel channel = route.channel();
         if ("CASH_WITHDRAWAL".equals(aepsType)) {
-            if (amountRupees == null || amountRupees < 100 || amountRupees > 10000 || amountRupees % 50 != 0) {
+            ChannelLimits.MoneyRule rule = ChannelLimits.aeps(channel.configJson());
+            if (amountRupees == null || amountRupees < rule.min() || amountRupees > rule.max()
+                    || rule.step() <= 0 || amountRupees % rule.step() != 0) {
                 throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_AEPS_AMOUNT",
-                        "AePS Cash Withdrawal amount must be between ₹100 and ₹10,000 in multiples of ₹50.");
+                        "AePS Cash Withdrawal amount must be between ₹" + rule.min() + " and ₹" + rule.max()
+                                + " in multiples of ₹" + rule.step() + ".");
             }
             amount = BigDecimal.valueOf(amountRupees).setScale(2, RoundingMode.HALF_UP);
         }
@@ -142,7 +146,6 @@ public class AepsService {
         BigDecimal lng = resolveCoordinate(longitudeRaw, userId, false);
         RdPidXmlParser.ParsedPidData parsedPid = RdPidXmlParser.parse(pidXml);
 
-        ServiceProviderRouter.RoutedChannel channel = router.selectChannel(userId, ServiceProviderRouter.AEPS);
         WalletService.WalletInfo wallet = walletService.getByUser(userId);
         if (!wallet.active()) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "WALLET_FROZEN", "Your operating wallet is frozen.");
@@ -202,9 +205,9 @@ public class AepsService {
         upstreamPayload.put("longitude", lng.toPlainString());
         upstreamPayload.put("biometricData", parsedPid.toEmeraldBiometricData(cleanAadhaar));
 
-        EmeraldClient.GenericApiResponse res;
+        ProviderModels.AepsResult res;
         try (var ignored = EmeraldTraceContext.open(userId, "STEP4_AEPS_" + aepsType, externalRef)) {
-            res = emeraldClient.executeAeps(channel.outletCode(), upstreamPayload);
+            res = route.port().transact(channel, upstreamPayload);
         }
         if ("AEPS_PATH_UNCONFIGURED".equals(res.statusCode())) {
             String msg = "AePS banking switch route is awaiting upstream activation on this environment.";
@@ -212,15 +215,15 @@ public class AepsService {
             throw ApiException.of(HttpStatus.SERVICE_UNAVAILABLE, "AEPS_SWITCH_PENDING", msg);
         }
 
-        Map<String, Object> data = res.data();
+        Map<String, Object> data = res.data() == null ? Map.of() : res.data();
         String providerTxnId = firstNonBlank(str(data.get("txnId")), str(data.get("transactionId")));
         String rrn = firstNonBlank(str(data.get("rrn")), str(data.get("bankRrn")), str(data.get("utr")), providerTxnId);
         BigDecimal availBal = parseBigDecimalOrNull(data.get("availableBalance"));
         Object miniStmt = data.get("miniStatement");
 
-        if (res.success()) {
+        if (res.outcome() == ProviderModels.Outcome.SUCCESS) {
             settleSuccess(aepsId, txnId, userId, aepsType, amount, providerTxnId, rrn, availBal, miniStmt, res.statusCode(), res.message());
-        } else if ("2001".equals(res.statusCode()) || "PENDING".equalsIgnoreCase(str(data.get("status")))) {
+        } else if (res.outcome() == ProviderModels.Outcome.PENDING) {
             jdbc.update("""
                     UPDATE aeps_transactions
                        SET provider_txn_id = COALESCE(?, provider_txn_id),

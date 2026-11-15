@@ -118,8 +118,16 @@ app:
     callback-secret: ${APP_EMERALD_CALLBACK_SECRET:}
     aeps-transact-path: ${APP_EMERALD_AEPS_TRANSACT_PATH:}
     payout-status-path: ${APP_EMERALD_PAYOUT_STATUS_PATH:}
-    log-payloads: ${APP_EMERALD_LOG_PAYLOADS:true}
+    log-payloads: ${APP_EMERALD_LOG_PAYLOADS:false}
     mask-account-numbers: ${APP_EMERALD_MASK_ACCOUNT_NUMBERS:true}
+  iserveu:
+    enabled: ${APP_ISERVEU_ENABLED:false}
+    base-url: ${APP_ISERVEU_BASE_URL:https://api-onprem.iserveu.online/commonAdmin/api/upi/initiate-dynamic-transaction/v2}
+    client-id: ${APP_ISERVEU_CLIENT_ID:}
+    client-secret: ${APP_ISERVEU_CLIENT_SECRET:}
+    pass-key: ${APP_ISERVEU_PASS_KEY:}
+    enc-key: ${APP_ISERVEU_ENC_KEY:}
+    header-secret: ${APP_ISERVEU_HEADER_SECRET:}
   biometric:
     rd-env: ${APP_BIOMETRIC_RD_ENV:P}
     allow-pasted-pid: ${APP_BIOMETRIC_ALLOW_PASTED_PID:false}

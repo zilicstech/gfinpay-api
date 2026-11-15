@@ -235,27 +235,31 @@ class EmeraldMultiProviderFlowTest {
                     String amt = String.valueOf(reqJson.getOrDefault("amount", "500"));
                     resp = """
                             {
-                              "status": "UPITOCASH00000",
+                              "status": "UPICASH00000",
                               "success": true,
-                              "message": "QR generated",
+                              "message": "QR Generated Successfully.",
                               "data": {
                                 "txnId": "EMD_UATM_%s",
                                 "externalRef": "%s",
-                                "qrStatus": "PENDING",
+                                "qrStatus": "INITIATED",
+                                "qrStatusMsg": "QR Generated Successfully",
                                 "qrString": "upi://pay?pa=merchant@icici&am=%s&tr=%s",
-                                "displayExpirySec": 90,
+                                "qrMobile": "upi://pay?pa=merchant@icici&am=%s&tr=%s",
+                                "qrCreatedDt": "2026-11-15 12:02:28",
+                                "expiryDt": "2026-11-15 12:03:56",
+                                "displayExpirySec": "30",
                                 "payableValue": "%s",
                                 "transactionValue": "%s"
                               }
                             }
-                            """.formatted(extRef, extRef, amt, extRef, amt, amt);
+                            """.formatted(extRef, extRef, amt, extRef, amt, extRef, amt, amt);
                 }
                 case "/upicash/v1/uatm/qr-status" -> {
                     String qrMode = mockQrStatusMode.get();
                     String refNo = String.valueOf(reqJson.getOrDefault("referenceNo", "REF1"));
                     resp = """
                             {
-                              "status": "UPITOCASH00000",
+                              "status": "UPICASH00000",
                               "success": true,
                               "message": "QR status fetched",
                               "data": {
@@ -484,7 +488,7 @@ class EmeraldMultiProviderFlowTest {
         // Attempting UPI Cashout before Biometric KYC must be blocked cleanly
         ApiException blockedEx = assertThrows(
                 ApiException.class,
-                () -> cashoutService.generateQr(retailer, 500, "9123456789", "Customer", "12.9716", "77.5946"));
+                () -> cashoutService.generateQr(retailer, 500, "9123456789", "Customer", "12.9716", "77.5946", "qr-blocked"));
         assertEquals("BIOMETRIC_KYC_REQUIRED", blockedEx.getCode());
 
         // 3. Step 2: Retailer Completes White-Label Biometric KYC
@@ -512,9 +516,11 @@ class EmeraldMultiProviderFlowTest {
             assertFalse((Boolean) eligBefore.get("eligible"), "Payout must be blocked at count=" + (i - 1));
             assertEquals(i - 1, eligBefore.get("completedCashoutCount"));
 
-            Map<String, Object> qr = cashoutService.generateQr(retailer, 500, "9123456780", "Walkin " + i, "12.9716", "77.5946");
+            Map<String, Object> qr = cashoutService.generateQr(retailer, 500, "9123456780", "Walkin " + i, "12.9716", "77.5946", "qr-" + i);
             String extRef = String.valueOf(qr.get("refid"));
-            assertEquals("AWAITING_PAYMENT", qr.get("status"));
+            assertEquals("QR_GENERATED", qr.get("status"));
+            assertEquals(88, qr.get("displayExpirySec"));
+            assertTrue(((Number) qr.get("remainingSec")).longValue() > 0);
 
             // Send Emerald Webhook with WRONG secret -> must reject (authorized=false)
             String webhookJson = """
@@ -557,7 +563,7 @@ class EmeraldMultiProviderFlowTest {
 
         // Initiate ₹1,000 Payout -> upstream returns 2001 PENDING -> wallet places ₹1,000 HOLD (available = ₹2,500, hold = ₹1,000)
         Map<String, Object> payout = payoutService.initiatePayout(
-                retailer, new BigDecimal("1000"), "IMPS", "Settlement 1", "12.9716", "77.5946");
+                retailer, new BigDecimal("1000"), "IMPS", "Settlement 1", "12.9716", "77.5946", "payout-1");
         assertEquals("PENDING", payout.get("status"));
         UUID payoutTxnId = (UUID) payout.get("transactionId");
         String payoutRef = String.valueOf(payout.get("reference"));
@@ -720,7 +726,9 @@ class EmeraldMultiProviderFlowTest {
         // 1. ROUND_ROBIN alternates cleanly across active FULL_KYC channels
         router.updatePolicy("UPI_CASHOUT", "ROUND_ROBIN", true);
         ServiceProviderRouter.RoutedChannel r1 = router.selectChannel(userId, "UPI_CASHOUT");
+        router.noteSuccessfulSelection("UPI_CASHOUT");
         ServiceProviderRouter.RoutedChannel r2 = router.selectChannel(userId, "UPI_CASHOUT");
+        router.noteSuccessfulSelection("UPI_CASHOUT");
         ServiceProviderRouter.RoutedChannel r3 = router.selectChannel(userId, "UPI_CASHOUT");
         assertFalse(r1.channelId().equals(r2.channelId()), "Round-robin must alternate between the two active channels");
         assertEquals(r1.channelId(), r3.channelId(), "3rd call wraps back to 1st channel");

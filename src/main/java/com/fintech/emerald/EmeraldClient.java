@@ -11,6 +11,8 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -420,10 +422,11 @@ public class EmeraldClient {
         String message = extractMessage(res.json());
         Map<String, Object> data = asMap(res.json().get("data"));
         String qrString = firstNonBlank(str(data.get("qrString")), str(data.get("qrMobile")));
-        boolean ok = Boolean.TRUE.equals(res.json().get("success"))
-                && "UPITOCASH00000".equalsIgnoreCase(status)
+        boolean ok = (res.httpStatus() >= 200 && res.httpStatus() < 300)
+                && !Boolean.FALSE.equals(res.json().get("success"))
+                && (Boolean.TRUE.equals(res.json().get("success")) || isUatmSuccessStatus(status))
                 && !qrString.isBlank();
-        int expirySec = parsePositiveInt(str(data.get("displayExpirySec")), 90);
+        int expirySec = resolveUatmExpirySec(data);
         return new UatmQrResponse(
                 ok,
                 res.httpStatus(),
@@ -469,7 +472,7 @@ public class EmeraldClient {
                 str(data.get("bankRrn")),
                 str(data.get("npciTxnId")),
                 str(data.get("txnId")));
-        boolean ok = Boolean.TRUE.equals(res.json().get("success")) || "UPITOCASH00000".equalsIgnoreCase(status);
+        boolean ok = Boolean.TRUE.equals(res.json().get("success")) || isUatmSuccessStatus(status);
         return new UatmStatusResponse(
                 ok,
                 res.httpStatus(),
@@ -986,6 +989,37 @@ public class EmeraldClient {
             copy.put("data", data);
         }
         return copy;
+    }
+
+    private static final DateTimeFormatter UATM_DT_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    private static boolean isUatmSuccessStatus(String status) {
+        if (status == null || status.isBlank()) {
+            return false;
+        }
+        String norm = status.trim().toUpperCase(Locale.ROOT);
+        return "UPICASH00000".equals(norm)
+                || "UPITOCASH00000".equals(norm)
+                || "EMD00000".equals(norm)
+                || "2000".equals(norm);
+    }
+
+    private static int resolveUatmExpirySec(Map<String, Object> data) {
+        int displaySec = parsePositiveInt(str(data.get("displayExpirySec")), 90);
+        String createdStr = str(data.get("qrCreatedDt"));
+        String expiryStr = str(data.get("expiryDt"));
+        if (!createdStr.isBlank() && !expiryStr.isBlank()) {
+            try {
+                LocalDateTime created = LocalDateTime.parse(createdStr, UATM_DT_FMT);
+                LocalDateTime expiry = LocalDateTime.parse(expiryStr, UATM_DT_FMT);
+                long diffSec = Duration.between(created, expiry).getSeconds();
+                if (diffSec > displaySec && diffSec <= 600) {
+                    return (int) diffSec;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return displaySec;
     }
 
     private static int parsePositiveInt(String raw, int fallback) {

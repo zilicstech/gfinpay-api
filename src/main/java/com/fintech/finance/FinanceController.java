@@ -1,6 +1,10 @@
 package com.fintech.finance;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fintech.identity.AdminPlatformService;
+import com.fintech.platform.idempotency.ExternalRefs;
+import com.fintech.platform.idempotency.IdempotencyService;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiException;
 import com.fintech.platform.web.ApiResponse;
@@ -16,6 +20,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -29,10 +34,15 @@ public class FinanceController {
 
     private final FinanceService finance;
     private final AdminPlatformService admin;
+    private final IdempotencyService idempotency;
+    private final ObjectMapper mapper;
 
-    public FinanceController(FinanceService finance, AdminPlatformService admin) {
+    public FinanceController(FinanceService finance, AdminPlatformService admin,
+                             IdempotencyService idempotency, ObjectMapper mapper) {
         this.finance = finance;
         this.admin = admin;
+        this.idempotency = idempotency;
+        this.mapper = mapper;
     }
 
     @PostMapping(value = "/activation-requests", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -51,6 +61,7 @@ public class FinanceController {
     @PreAuthorize("isAuthenticated()")
     public ApiResponse<Map<String, Object>> submitWallet(
             @AuthenticationPrincipal AuthPrincipal me,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @RequestParam(required = false) UUID retailerId,
             @RequestParam BigDecimal amount,
             @RequestParam String utr,
@@ -58,8 +69,24 @@ public class FinanceController {
             @RequestParam String transferMode,
             @RequestParam(required = false) String remarks,
             @RequestParam("proof") MultipartFile proof) {
-        return ApiResponse.ok(finance.submit(me, FinanceService.WALLET_TOPUP, retailerId, amount, utr, remarks, proof,
-                collectionAccountId, transferMode));
+        String key = ExternalRefs.requireKey(idempotencyKey);
+        String canonical = amount.toPlainString() + "|" + utr + "|" + collectionAccountId + "|" + transferMode + "|" + retailerId;
+        IdempotencyService.Claim claim = idempotency.claim(me.userId(), key, canonical);
+        if (claim.replay()) {
+            try {
+                return ApiResponse.ok(mapper.readValue(claim.responseBody(), new TypeReference<>() {}));
+            } catch (Exception e) {
+                throw ApiException.of(HttpStatus.CONFLICT, "IDEMPOTENCY_REPLAY", "Stored response could not be read");
+            }
+        }
+        Map<String, Object> result = finance.submit(me, FinanceService.WALLET_TOPUP, retailerId, amount, utr, remarks, proof,
+                collectionAccountId, transferMode);
+        try {
+            idempotency.complete(claim.keyId(), 200, mapper.writeValueAsString(result));
+        } catch (Exception e) {
+            throw ApiException.of(HttpStatus.INTERNAL_SERVER_ERROR, "IDEMPOTENCY_STORE", "Could not store the wallet request");
+        }
+        return ApiResponse.ok(result);
     }
 
     @GetMapping("/requests")

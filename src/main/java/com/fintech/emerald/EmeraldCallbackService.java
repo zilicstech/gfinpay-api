@@ -233,7 +233,7 @@ public class EmeraldCallbackService {
                 txnId);
 
         return switch (productCode) {
-            case "UPICASH" -> cashoutService.finalizeFromCallback(
+            case "UPICASH", "UPITOCASH", "UPI_CASH", "UATM" -> cashoutService.finalizeFromCallback(
                     externalRef,
                     txnId,
                     status,

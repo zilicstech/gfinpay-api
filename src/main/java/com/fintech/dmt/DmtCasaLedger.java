@@ -191,6 +191,11 @@ public class DmtCasaLedger {
         return body;
     }
 
+    /** No sponsor bank is connected, so DMT cannot move money. */
+    public boolean providerReady() {
+        return false;
+    }
+
     @Transactional
     public void rememberRefundOtp(UUID txnId, UUID agentId, String stateResp) {
         int updated = jdbc.update("""

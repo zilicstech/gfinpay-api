@@ -1,6 +1,5 @@
 package com.fintech.verification;
 
-import com.fintech.platform.PlatformServiceGate;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiResponse;
 import jakarta.validation.Valid;
@@ -104,30 +103,17 @@ public class VerificationController {
 
     public record DigilockerDocReviewRequest(@NotNull Boolean approve, String note) {}
 
-    public record CashRequest(String mode, String amount) {}
-
-    public record PayoutRequest(String amount, String accountName, String accountNumber, String ifsc) {}
-
     private final VerificationService verification;
     private final DigilockerDocumentService digilockerDocuments;
     private final VerificationGate gate;
-    private final PlatformServiceGate services;
-    private final CashProvider cash;
-    private final PayoutProvider payout;
 
     public VerificationController(
             VerificationService verification,
             DigilockerDocumentService digilockerDocuments,
-            VerificationGate gate,
-            PlatformServiceGate services,
-            CashProvider cash,
-            PayoutProvider payout) {
+            VerificationGate gate) {
         this.verification = verification;
         this.digilockerDocuments = digilockerDocuments;
         this.gate = gate;
-        this.services = services;
-        this.cash = cash;
-        this.payout = payout;
     }
 
     @GetMapping
@@ -345,29 +331,5 @@ public class VerificationController {
             @AuthenticationPrincipal AuthPrincipal me,
             @PathVariable UUID id) {
         return ApiResponse.ok(digilockerDocuments.refetchForUser(me, id));
-    }
-
-    @PostMapping("/cash")
-    @PreAuthorize("hasAuthority('wallet.view')")
-    public ApiResponse<Map<String, Object>> cash(@AuthenticationPrincipal AuthPrincipal me,
-                                                 @RequestBody CashRequest body) {
-        gate.requireBusiness(me.userId());
-        String mode = body.mode() == null ? "" : body.mode().trim().toUpperCase();
-        if (!"UPI".equals(mode) && !"AEPS".equals(mode)) {
-            mode = "UPI";
-        }
-        services.requireEnabled("AEPS".equals(mode) ? PlatformServiceGate.AEPS : PlatformServiceGate.UPI_CASHOUT);
-        cash.start(mode);
-        return ApiResponse.ok(Map.of("mode", mode));
-    }
-
-    @PostMapping("/payout")
-    @PreAuthorize("hasAuthority('wallet.view')")
-    public ApiResponse<Map<String, Object>> payout(@AuthenticationPrincipal AuthPrincipal me,
-                                                   @RequestBody PayoutRequest body) {
-        gate.requireBusiness(me.userId());
-        services.requireEnabled(PlatformServiceGate.PAYOUT);
-        payout.execute();
-        return ApiResponse.ok(Map.of("status", "NOT_CONFIGURED"));
     }
 }

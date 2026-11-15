@@ -1,5 +1,6 @@
 package com.fintech.ledger;
 
+import com.fintech.platform.web.TextValues;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
@@ -37,7 +38,7 @@ public class LedgerService {
                 INSERT INTO ledger_entries (transaction_id, posting_group, wallet_id, direction, amount, narration)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """, entries.stream()
-                .map(e -> new Object[]{transactionId, group, e.walletId(), e.direction(), e.amount(), e.narration()})
+                .map(e -> new Object[]{transactionId, group, e.walletId(), e.direction(), TextValues.money(e.amount()), e.narration()})
                 .toList());
         return group;
     }

@@ -2,6 +2,10 @@ package com.fintech.cashout;
 
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiResponse;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -11,6 +15,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -19,8 +24,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class CashoutController {
 
     public record GenerateUpiQrRequest(
-            Integer amount,
-            String customerMobile,
+            @NotNull @Min(1) Integer amount,
+            @NotBlank String customerMobile,
             String customerName,
             String latitude,
             String longitude
@@ -32,24 +37,26 @@ public class CashoutController {
         this.cashout = cashout;
     }
 
-    @PostMapping("/upi/token")
+    @GetMapping("/upi/limits")
     @PreAuthorize("hasAuthority('wallet.view')")
-    public ApiResponse<Map<String, Object>> token(@AuthenticationPrincipal AuthPrincipal me) {
-        return ApiResponse.ok(cashout.startUpi(me));
+    public ApiResponse<Map<String, Object>> limits(@AuthenticationPrincipal AuthPrincipal me) {
+        return ApiResponse.ok(cashout.limits(me));
     }
 
     @PostMapping("/upi/generate-qr")
     @PreAuthorize("hasAuthority('wallet.view')")
     public ApiResponse<Map<String, Object>> generateQr(
             @AuthenticationPrincipal AuthPrincipal me,
-            @RequestBody GenerateUpiQrRequest body) {
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @Valid @RequestBody GenerateUpiQrRequest body) {
         return ApiResponse.ok(cashout.generateQr(
                 me,
                 body.amount(),
                 body.customerMobile(),
                 body.customerName(),
                 body.latitude(),
-                body.longitude()));
+                body.longitude(),
+                idempotencyKey));
     }
 
     @GetMapping("/upi/latest")

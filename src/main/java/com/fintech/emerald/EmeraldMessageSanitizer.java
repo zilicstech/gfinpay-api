@@ -14,7 +14,7 @@ public final class EmeraldMessageSanitizer {
     private static final Pattern PIPE_PHRASE = Pattern.compile("(?i)pipe\\s+sync\\s+failed:\\s*");
     private static final Pattern ON_PIPE = Pattern.compile("(?i)\\bon\\s+(the\\s+)?pipe\\b(\\s+[A-Z0-9_-]+)?");
     private static final Pattern INTERNAL_CODES = Pattern.compile(
-            "\\b(EMD[A-Z0-9_]*|UPITOCASH[0-9]+|OUT_[0-9A-Z_]+|ENT[0-9]{4,}|PRT[0-9]+|VAL[0-9]+|API[0-9]+)\\b");
+            "\\b(EMD[A-Z0-9_]*|UPICASH[0-9]+|UPITOCASH[0-9]+|OUT_[0-9A-Z_]+|ENT[0-9]{4,}|PRT[0-9]+|VAL[0-9]+|API[0-9]+)\\b");
     private static final Pattern MULTI_SPACE = Pattern.compile("\\s{2,}");
 
     private EmeraldMessageSanitizer() {}

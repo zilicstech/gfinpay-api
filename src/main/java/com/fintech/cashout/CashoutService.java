@@ -1,29 +1,35 @@
 package com.fintech.cashout;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fintech.commission.CommissionEngine;
-import com.fintech.emerald.EmeraldClient;
 import com.fintech.emerald.EmeraldMessageSanitizer;
 import com.fintech.emerald.EmeraldTraceContext;
 import com.fintech.ledger.LedgerService;
 import com.fintech.ledger.TransactionService;
 import com.fintech.ledger.WalletService;
 import com.fintech.platform.PlatformServiceGate;
+import com.fintech.platform.idempotency.ExternalRefs;
+import com.fintech.platform.idempotency.IdempotencyService;
 import com.fintech.platform.security.AuthPrincipal;
+import com.fintech.platform.tx.ShortTransactions;
 import com.fintech.platform.web.ApiException;
+import com.fintech.provider.ChannelLimits;
+import com.fintech.provider.ProviderDispatch;
+import com.fintech.provider.ProviderRegistry;
 import com.fintech.provider.ServiceProviderRouter;
-import com.fintech.verification.CashProvider;
+import com.fintech.provider.canonical.ProviderModels;
 import com.fintech.verification.VerificationGate;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ThreadLocalRandom;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -51,66 +57,61 @@ public class CashoutService {
     private final ObjectMapper mapper;
     private final PlatformServiceGate services;
     private final VerificationGate verification;
-    private final CashProvider cash;
     private final ServiceProviderRouter router;
-    private final EmeraldClient emeraldClient;
+    private final ProviderRegistry providers;
+    private final ProviderDispatch dispatch;
     private final WalletService walletService;
     private final LedgerService ledgerService;
     private final TransactionService transactionService;
     private final CommissionEngine commissionEngine;
+    private final ShortTransactions shortTx;
+    private final IdempotencyService idempotency;
 
     public CashoutService(
             JdbcTemplate jdbc,
             ObjectMapper mapper,
             PlatformServiceGate services,
             VerificationGate verification,
-            CashProvider cash,
             ServiceProviderRouter router,
-            EmeraldClient emeraldClient,
+            ProviderRegistry providers,
+            ProviderDispatch dispatch,
             WalletService walletService,
             LedgerService ledgerService,
             TransactionService transactionService,
-            CommissionEngine commissionEngine) {
+            CommissionEngine commissionEngine,
+            ShortTransactions shortTx,
+            IdempotencyService idempotency) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.services = services;
         this.verification = verification;
-        this.cash = cash;
         this.router = router;
-        this.emeraldClient = emeraldClient;
+        this.providers = providers;
+        this.dispatch = dispatch;
         this.walletService = walletService;
         this.ledgerService = ledgerService;
         this.transactionService = transactionService;
         this.commissionEngine = commissionEngine;
-    }
-
-    /** Legacy placeholder check preserved for backward compatibility. */
-    public Map<String, Object> startUpi(AuthPrincipal me) {
-        services.requireEnabled(PlatformServiceGate.UPI_CASHOUT);
-        verification.requireBusiness(me.userId());
-        cash.start("UPI");
-        return Map.of("mode", "UPI");
+        this.shortTx = shortTx;
+        this.idempotency = idempotency;
     }
 
     /**
-     * Generates a dynamic UPI Cash Withdrawal (UATM) QR code routed via {@link ServiceProviderRouter}.
+     * Generates a dynamic UPI cash-out QR. The provider call runs outside any row lock.
      */
-    @Transactional
     public Map<String, Object> generateQr(
             AuthPrincipal me,
             Integer amountRupees,
             String customerMobileRaw,
             String customerNameRaw,
             String latitudeRaw,
-            String longitudeRaw) {
+            String longitudeRaw,
+            String idempotencyKey) {
+        String idemKey = ExternalRefs.requireKey(idempotencyKey);
         services.requireEnabled(PlatformServiceGate.UPI_CASHOUT);
         UUID userId = me.userId();
         requireUnlockedMerchant(userId);
 
-        if (amountRupees == null || amountRupees < 200 || amountRupees > 5000 || amountRupees % 100 != 0) {
-            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_CASHOUT_AMOUNT",
-                    "UPI Cashout amount must be between ₹200 and ₹5,000 in multiples of ₹100.");
-        }
         String cleanMobile = normalizeMobile(customerMobileRaw);
         if (!cleanMobile.matches("[6-9][0-9]{9}")) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_MOBILE",
@@ -120,40 +121,75 @@ public class CashoutService {
         String lat = resolveCoordinate(latitudeRaw, userId, true);
         String lng = resolveCoordinate(longitudeRaw, userId, false);
 
-        ServiceProviderRouter.RoutedChannel channel = router.selectChannel(userId, ServiceProviderRouter.UPI_CASHOUT);
+        ProviderDispatch.RoutedUpi route = dispatch.upiCashout(userId);
+        ServiceProviderRouter.RoutedChannel channel = route.channel();
+        ChannelLimits.MoneyRule rule = ChannelLimits.upiCashout(channel.configJson());
+        if (amountRupees == null || amountRupees < rule.min() || amountRupees > rule.max()
+                || rule.step() <= 0 || amountRupees % rule.step() != 0) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_CASHOUT_AMOUNT",
+                    "UPI Cashout amount must be between ₹" + rule.min() + " and ₹" + rule.max()
+                            + " in multiples of ₹" + rule.step() + ".");
+        }
         WalletService.WalletInfo wallet = walletService.getByUser(userId);
         if (!wallet.active()) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "WALLET_FROZEN",
                     "Your operating wallet is currently frozen. Please contact support.");
         }
 
-        String externalRef = "UPICW" + System.currentTimeMillis()
-                + String.format("%04d", ThreadLocalRandom.current().nextInt(10000));
+        String canonical = amountRupees + "|" + cleanMobile + "|" + cleanName + "|" + lat + "|" + lng;
+        IdempotencyService.Claim claim = idempotency.claim(userId, idemKey, canonical);
+        if (claim.replay()) {
+            return readReplay(claim.responseBody());
+        }
+        String externalRef = ExternalRefs.fromKey("CW", claim.keyId());
         BigDecimal amount = BigDecimal.valueOf(amountRupees).setScale(2, RoundingMode.HALF_UP);
 
-        if (!"EMERALD".equalsIgnoreCase(channel.providerCode())) {
-            throw ApiException.of(HttpStatus.SERVICE_UNAVAILABLE, "CHANNEL_UNSUPPORTED",
-                    "Selected cashout terminal rail is not yet active.");
-        }
-
-        EmeraldClient.UatmQrResponse qrRes;
+        ProviderModels.QrResult qrRes;
         try (var ignored = EmeraldTraceContext.open(userId, "STEP4_UPI_QR", externalRef)) {
-            qrRes = emeraldClient.generateUatmQr(
-                    channel.outletCode(),
-                    String.valueOf(amountRupees),
-                    cleanMobile,
-                    lat,
-                    lng,
-                    externalRef);
+            qrRes = route.port().generateQr(
+                    channel,
+                    new ProviderModels.QrRequest(amountRupees, cleanMobile, cleanName, lat, lng, externalRef));
         }
-
         if (!qrRes.success()) {
-            String msg = EmeraldMessageSanitizer.sanitize(
-                    qrRes.message(),
-                    "Unable to generate UPI QR right now. Please try again shortly.");
+            String fallbackMsg = "Unable to generate UPI QR right now. Please try again shortly.";
+            String rawMsg = qrRes.message();
+            if (rawMsg != null && rawMsg.toLowerCase(Locale.ROOT).contains("successfully")) {
+                rawMsg = fallbackMsg;
+            }
+            String msg = EmeraldMessageSanitizer.sanitize(rawMsg, fallbackMsg);
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "QR_GENERATION_FAILED", msg);
         }
+        router.noteSuccessfulSelection(ServiceProviderRouter.UPI_CASHOUT);
 
+        Map<String, Object> created = shortTx.required(() -> persistQrSession(
+                userId, wallet, channel, amount, externalRef, qrRes, cleanName, cleanMobile, lat, lng));
+        completeIdempotency(claim.keyId(), created);
+        return created;
+    }
+
+    public Map<String, Object> limits(AuthPrincipal me) {
+        services.requireEnabled(PlatformServiceGate.UPI_CASHOUT);
+        ChannelLimits.MoneyRule rule;
+        try {
+            ServiceProviderRouter.RoutedChannel channel = router.selectChannel(me.userId(), ServiceProviderRouter.UPI_CASHOUT);
+            rule = ChannelLimits.upiCashout(channel.configJson());
+        } catch (ApiException ex) {
+            rule = ChannelLimits.upiCashout("{}");
+        }
+        return Map.of("min", rule.min(), "max", rule.max(), "step", rule.step());
+    }
+
+    private Map<String, Object> persistQrSession(
+            UUID userId,
+            WalletService.WalletInfo wallet,
+            ServiceProviderRouter.RoutedChannel channel,
+            BigDecimal amount,
+            String externalRef,
+            ProviderModels.QrResult qrRes,
+            String cleanName,
+            String cleanMobile,
+            String lat,
+            String lng) {
         UUID txnId = transactionService.create(
                 "CASHOUT_UPI",
                 userId,
@@ -175,6 +211,7 @@ public class CashoutService {
         int expirySec = Math.max(30, qrRes.displayExpirySec());
         Instant expiresAt = Instant.now().plusSeconds(expirySec);
         BigDecimal payableValue = parseAmountOrFallback(qrRes.payableValue(), amount);
+        String storedQr = qrRes.storedQr();
 
         jdbc.update("""
                 INSERT INTO cashout_sessions
@@ -195,8 +232,8 @@ public class CashoutService {
                 blankToNull(qrRes.txnId()),
                 amount,
                 payableValue,
-                qrRes.qrString(),
-                qrRes.qrString(),
+                storedQr,
+                storedQr,
                 expirySec,
                 Timestamp.from(expiresAt),
                 blankToNull(cleanName),
@@ -243,34 +280,46 @@ public class CashoutService {
         return view(loadForUser(me.userId(), sessionId));
     }
 
-    @Transactional
     public Map<String, Object> refresh(AuthPrincipal me, UUID sessionId) {
         services.requireEnabled(PlatformServiceGate.UPI_CASHOUT);
-        Map<String, Object> row = loadForUpdateById(sessionId);
-        if (!me.userId().equals(row.get("agent_user_id"))) {
-            throw ApiException.of(HttpStatus.NOT_FOUND, "CASHOUT_NOT_FOUND", "Cash-out session not found");
-        }
-        reconcileLockedSessionWithUpstream(row);
-        return view(loadForUser(me.userId(), sessionId));
+        Map<String, Object> row = loadForUser(me.userId(), sessionId);
+        ProviderModels.StatusResult upstream = pollUpstream(row);
+        return shortTx.required(() -> {
+            Map<String, Object> locked = loadForUpdateById(sessionId);
+            if (!me.userId().equals(locked.get("agent_user_id"))) {
+                throw ApiException.of(HttpStatus.NOT_FOUND, "CASHOUT_NOT_FOUND", "Cash-out session not found");
+            }
+            applyPolledStatus(locked, upstream);
+            return view(loadForUser(me.userId(), sessionId));
+        });
     }
 
-    @Transactional
     public Map<String, Object> reconcileByTransactionId(UUID transactionId) {
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 SELECT %s
                   FROM cashout_sessions c
                  WHERE c.transaction_id = ?
-                 FOR UPDATE
                 """.formatted(SESSION_COLUMNS), transactionId);
         if (rows.isEmpty()) {
             return Map.of("matched", false);
         }
-        Map<String, Object> row = rows.get(0);
-        reconcileLockedSessionWithUpstream(row);
-        Map<String, Object> updated = jdbc.queryForMap("""
-                SELECT %s FROM cashout_sessions c WHERE c.id = ?
-                """.formatted(SESSION_COLUMNS), row.get("id"));
-        return view(updated);
+        ProviderModels.StatusResult upstream = pollUpstream(rows.get(0));
+        return shortTx.required(() -> {
+            List<Map<String, Object>> lockedRows = jdbc.queryForList("""
+                    SELECT %s
+                      FROM cashout_sessions c
+                     WHERE c.transaction_id = ?
+                     FOR UPDATE
+                    """.formatted(SESSION_COLUMNS), transactionId);
+            if (lockedRows.isEmpty()) {
+                return Map.of("matched", false);
+            }
+            Map<String, Object> locked = lockedRows.get(0);
+            applyPolledStatus(locked, upstream);
+            return view(jdbc.queryForMap("""
+                    SELECT %s FROM cashout_sessions c WHERE c.id = ?
+                    """.formatted(SESSION_COLUMNS), locked.get("id")));
+        });
     }
 
     @Transactional
@@ -319,45 +368,53 @@ public class CashoutService {
         return view(loadForUser(me.userId(), sessionId));
     }
 
-    private void reconcileLockedSessionWithUpstream(Map<String, Object> row) {
+    private ProviderModels.StatusResult pollUpstream(Map<String, Object> row) {
         String currentStatus = str(row.get("status"));
         if ("PAID".equals(currentStatus) || "CASH_DISPENSED".equals(currentStatus) || "REVERSED".equals(currentStatus)) {
-            return;
+            return null;
         }
-
         String providerCode = str(row.get("provider_code"));
         String outletCode = str(row.get("outlet_code"));
         String providerTxnId = str(row.get("provider_txn_id"));
         String externalRef = str(row.get("external_ref"));
+        if (providerCode.isBlank() || outletCode.isBlank() || (providerTxnId.isBlank() && externalRef.isBlank())) {
+            return null;
+        }
         String lat = firstNonBlank(str(row.get("latitude")), "19.0760");
         String lng = firstNonBlank(str(row.get("longitude")), "72.8777");
+        UUID agentId = (UUID) row.get("agent_user_id");
+        try (var ignored = EmeraldTraceContext.open(agentId, "STEP6_UPI_STATUS", externalRef)) {
+            ServiceProviderRouter.RoutedChannel channel = new ServiceProviderRouter.RoutedChannel(
+                    null, "", providerCode, str(row.get("pipe_code")), outletCode, "", "", "", "{}");
+            return providers.upi(providerCode).checkStatus(channel, providerTxnId, externalRef, lat, lng);
+        } catch (Exception ex) {
+            log.warn("UPI_CASHOUT status poll warning session={}: {}", row.get("id"), ex.getMessage());
+            return null;
+        }
+    }
 
-        if ("EMERALD".equalsIgnoreCase(providerCode) && !outletCode.isBlank()
-                && (!providerTxnId.isBlank() || !externalRef.isBlank())) {
-            UUID agentId = (UUID) row.get("agent_user_id");
-            try (var ignored = EmeraldTraceContext.open(agentId, "STEP6_UPI_STATUS", externalRef)) {
-                EmeraldClient.UatmStatusResponse st = emeraldClient.checkUatmQrStatus(
-                        outletCode, providerTxnId, externalRef, lat, lng);
-                String qrStatus = st.qrStatus();
-                if ("SUCCESS".equals(qrStatus) || "PAID".equals(qrStatus) || "COMPLETED".equals(qrStatus)) {
-                    settleLockedSessionSuccess(row, st.txnId(), st.utr(), st.payerVpa(), st.payerName());
-                    return;
-                }
-                if ("FAILED".equals(qrStatus) || "DECLINED".equals(qrStatus) || "REJECTED".equals(qrStatus)) {
-                    markLockedSessionUnpaidTerminal(row, "FAILED", st.statusCode(),
-                            firstNonBlank(st.qrStatusMsg(), st.message()), st.txnId());
-                    return;
-                }
-                if ("EXPIRED".equals(qrStatus)) {
-                    markLockedSessionUnpaidTerminal(row, "EXPIRED", st.statusCode(),
-                            firstNonBlank(st.qrStatusMsg(), "QR code expired before payment"), st.txnId());
-                    return;
-                }
-            } catch (Exception ex) {
-                log.warn("UPI_CASHOUT status poll warning session={}: {}", row.get("id"), ex.getMessage());
+    private void applyPolledStatus(Map<String, Object> row, ProviderModels.StatusResult upstream) {
+        String currentStatus = str(row.get("status"));
+        if ("PAID".equals(currentStatus) || "CASH_DISPENSED".equals(currentStatus) || "REVERSED".equals(currentStatus)) {
+            return;
+        }
+        String providerTxnId = str(row.get("provider_txn_id"));
+        if (upstream != null) {
+            String qrStatus = upstream.qrStatus() == null ? "" : upstream.qrStatus();
+            if ("SUCCESS".equals(qrStatus)) {
+                settleLockedSessionSuccess(row, upstream.txnId(), upstream.utr(), upstream.payerVpa(), upstream.payerName());
+                return;
+            }
+            if ("FAILED".equals(qrStatus)) {
+                markLockedSessionUnpaidTerminal(row, "FAILED", upstream.statusCode(), upstream.message(), upstream.txnId());
+                return;
+            }
+            if ("EXPIRED".equals(qrStatus)) {
+                markLockedSessionUnpaidTerminal(row, "EXPIRED", upstream.statusCode(),
+                        firstNonBlank(upstream.message(), "QR code expired before payment"), upstream.txnId());
+                return;
             }
         }
-
         Timestamp exp = (Timestamp) row.get("expires_at");
         if ("AWAITING_PAYMENT".equals(currentStatus)
                 && exp != null
@@ -570,9 +627,21 @@ public class CashoutService {
         out.put("transactionId", row.get("transaction_id"));
         out.put("amount", row.get("amount"));
         out.put("payableValue", row.get("payable_value") != null ? row.get("payable_value") : row.get("amount"));
-        out.put("status", row.get("status"));
-        out.put("qrString", firstNonBlank(str(row.get("qr_string")), str(row.get("upi_qr_payload"))));
-        out.put("displayExpirySec", row.get("display_expiry_sec") != null ? row.get("display_expiry_sec") : 90);
+        String qr = firstNonBlank(str(row.get("qr_string")), str(row.get("upi_qr_payload")));
+        String status = str(row.get("status"));
+        if ("AWAITING_PAYMENT".equals(status)) {
+            status = "QR_GENERATED";
+        }
+        int displayExpirySec = row.get("display_expiry_sec") instanceof Number n ? n.intValue() : 90;
+        Timestamp expTs = (Timestamp) row.get("expires_at");
+        long remainingSec = expTs != null
+                ? Math.max(0L, Duration.between(Instant.now(), expTs.toInstant()).getSeconds())
+                : displayExpirySec;
+        out.put("status", status);
+        out.put("qrString", qr);
+        out.put("qrKind", qrKind(qr));
+        out.put("displayExpirySec", displayExpirySec);
+        out.put("remainingSec", remainingSec);
         out.put("customerName", row.get("customer_name"));
         out.put("customerMobile", row.get("customer_mobile"));
         out.put("bankRrn", firstNonBlank(str(row.get("utr")), str(row.get("bank_rrn"))));
@@ -620,5 +689,32 @@ public class CashoutService {
 
     private static String str(Object val) {
         return val == null ? "" : String.valueOf(val).trim();
+    }
+
+    private static String qrKind(String qr) {
+        if (qr == null || qr.isBlank()) {
+            return "";
+        }
+        String value = qr.trim();
+        if (value.regionMatches(true, 0, "upi:", 0, 4) || value.startsWith("000201")) {
+            return "UPI_STRING";
+        }
+        return "PNG_BASE64";
+    }
+
+    private Map<String, Object> readReplay(String body) {
+        try {
+            return mapper.readValue(body, new TypeReference<>() {});
+        } catch (Exception e) {
+            throw ApiException.of(HttpStatus.CONFLICT, "IDEMPOTENCY_REPLAY", "Stored response could not be read");
+        }
+    }
+
+    private void completeIdempotency(UUID keyId, Map<String, Object> body) {
+        try {
+            idempotency.complete(keyId, 200, mapper.writeValueAsString(body));
+        } catch (Exception e) {
+            log.warn("UPI_CASHOUT idempotency complete failed key={}: {}", keyId, e.getMessage());
+        }
     }
 }

@@ -74,8 +74,9 @@ public class WalletService {
         WalletInfo main = lockByUser(userId);
         UUID txnId = transactionService.create("REWARDS_TRANSFER", userId, main.walletId(), amount, BigDecimal.ZERO,
                 null, null, "REWARDS", null);
-        ledgerService.post(txnId, rewards.walletId(), "DEBIT", amount, "Rewards moved to wallet");
-        ledgerService.post(txnId, main.walletId(), "CREDIT", amount, "Rewards moved to wallet");
+        ledgerService.postGroup(txnId, List.of(
+                LedgerService.Entry.debit(rewards.walletId(), amount, "Rewards moved to wallet"),
+                LedgerService.Entry.credit(main.walletId(), amount, "Rewards moved to wallet")));
         adjustCache(rewards.walletId(), amount.negate(), BigDecimal.ZERO);
         adjustCache(main.walletId(), amount, BigDecimal.ZERO);
         transactionService.transition(txnId, "SUCCESS", null, null);

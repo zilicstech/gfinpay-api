@@ -26,13 +26,18 @@ public class WebhookController {
     private final WebhookSigner signer;
     private final ProviderCallbackLog callbacks;
     private final ObjectMapper mapper;
+    private final InboundCallbackOrchestrator inbound;
+    private final com.fintech.iserveu.IserveuProperties iserveu;
 
     public WebhookController(WebhookService webhookService, WebhookSigner signer, ProviderCallbackLog callbacks,
-                             ObjectMapper mapper) {
+                             ObjectMapper mapper, InboundCallbackOrchestrator inbound,
+                             com.fintech.iserveu.IserveuProperties iserveu) {
         this.webhookService = webhookService;
         this.signer = signer;
         this.callbacks = callbacks;
         this.mapper = mapper;
+        this.inbound = inbound;
+        this.iserveu = iserveu;
     }
 
     @PostMapping("/iserveu/upi-cashpoint")
@@ -40,11 +45,32 @@ public class WebhookController {
             @RequestHeader(value = "pass_key", required = false) String passKey,
             @RequestHeader(value = "header_secrets", required = false) String headerSecrets,
             @RequestBody(required = false) String rawBody) {
-        log.info("ISERVEU_CASHPOINT_WEBHOOK passKeyPresent={} headerSecretsPresent={} body={}",
+        int bytes = rawBody == null ? 0 : rawBody.length();
+        log.info("ISERVEU_CASHPOINT_WEBHOOK passKeyPresent={} headerSecretsPresent={} bytes={}",
                 passKey != null && !passKey.isBlank(),
                 headerSecrets != null && !headerSecrets.isBlank(),
-                rawBody);
+                bytes);
+        if (!inbound.iserveuAuthorized(passKey) || !headerSecretsMatch(headerSecrets)) {
+            return ResponseEntity.ok(Map.of("status", 1, "statusDesc", "Failure"));
+        }
+        if (bytes > WebhookInbox.MAX_BODY_BYTES) {
+            return ResponseEntity.ok(Map.of("status", 1, "statusDesc", "Failure"));
+        }
+        inbound.acceptIserveu(rawBody);
         return ResponseEntity.ok(Map.of("status", 0, "statusDesc", "success"));
+    }
+
+    private boolean headerSecretsMatch(String provided) {
+        String expected = iserveu.headerSecret();
+        if (expected == null || expected.isBlank()) {
+            return true;
+        }
+        if (provided == null || provided.isBlank()) {
+            return false;
+        }
+        return java.security.MessageDigest.isEqual(
+                expected.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                provided.trim().getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     @PostMapping("/{provider}")

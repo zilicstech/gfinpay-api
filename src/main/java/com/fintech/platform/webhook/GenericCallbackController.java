@@ -4,9 +4,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.servlet.http.HttpServletRequest;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -31,17 +35,28 @@ public class GenericCallbackController {
 
     private final ProviderCallbackLog callbacks;
     private final ObjectMapper mapper;
+    private final String webhookSecret;
 
-    public GenericCallbackController(ProviderCallbackLog callbacks, ObjectMapper mapper) {
+    public GenericCallbackController(ProviderCallbackLog callbacks, ObjectMapper mapper,
+                                     @Value("${app.webhook.secret}") String webhookSecret) {
         this.callbacks = callbacks;
         this.mapper = mapper;
+        this.webhookSecret = webhookSecret == null ? "" : webhookSecret;
     }
 
     @PostMapping
-    public ResponseEntity<Map<String, Boolean>> post(@RequestBody(required = false) String rawBody,
+    public ResponseEntity<Map<String, Boolean>> post(
+            @RequestHeader(value = "X-Callback-Token", required = false) String token,
+            @RequestBody(required = false) String rawBody,
                                                      @RequestParam(value = "provider", required = false) String providerParam,
                                                      @RequestHeader(value = "provider", required = false) String providerHeader,
                                                      HttpServletRequest request) {
+        if (!authorized(token)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("received", false));
+        }
+        if (rawBody != null && rawBody.getBytes(StandardCharsets.UTF_8).length > WebhookInbox.MAX_BODY_BYTES) {
+            return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(Map.of("received", false));
+        }
         String provider = provider(providerParam, providerHeader);
         Body body = readBody(rawBody);
         callbacks.record(provider, SOURCE, text(body.node(), "event"), statusOf(body.node()), merchantOf(body.node()),
@@ -52,9 +67,14 @@ public class GenericCallbackController {
     }
 
     @GetMapping
-    public ResponseEntity<Map<String, Boolean>> get(@RequestParam(value = "provider", required = false) String providerParam,
+    public ResponseEntity<Map<String, Boolean>> get(
+            @RequestHeader(value = "X-Callback-Token", required = false) String token,
+            @RequestParam(value = "provider", required = false) String providerParam,
                                                     @RequestHeader(value = "provider", required = false) String providerHeader,
                                                     HttpServletRequest request) {
+        if (!authorized(token)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("received", false));
+        }
         String provider = provider(providerParam, providerHeader);
         ObjectNode node = mapper.createObjectNode();
         request.getParameterMap().forEach((key, values) -> {
@@ -73,6 +93,15 @@ public class GenericCallbackController {
         return ResponseEntity.ok()
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(Map.of("received", true));
+    }
+
+    private boolean authorized(String token) {
+        if (webhookSecret.isBlank() || token == null || token.isBlank()) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+                webhookSecret.trim().getBytes(StandardCharsets.UTF_8),
+                token.trim().getBytes(StandardCharsets.UTF_8));
     }
 
     private Body readBody(String rawBody) {

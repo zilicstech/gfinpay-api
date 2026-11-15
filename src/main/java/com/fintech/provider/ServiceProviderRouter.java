@@ -14,8 +14,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Multi-provider channel router supporting {@code ROUND_ROBIN} and {@code PRIMARY_FALLBACK}
- * selection across active, {@code FULL_KYC}-activated provider channels for a retailer.
+ * Multi-provider channel router.
+ * {@code ROUND_ROBIN} advances only after {@link #noteSuccessfulSelection(String)}.
+ * {@code PRIMARY_FALLBACK} always picks the lowest {@code priority_order}. It does not
+ * try the next channel after a provider error, because money may already be held.
  */
 @Service
 public class ServiceProviderRouter {
@@ -35,7 +37,8 @@ public class ServiceProviderRouter {
             String outletCode,
             String pipeOutletCode,
             String kycStatus,
-            String bankSyncStatus
+            String bankSyncStatus,
+            String configJson
     ) {}
 
     private final JdbcTemplate jdbc;
@@ -72,7 +75,8 @@ public class ServiceProviderRouter {
                        m.outlet_code,
                        a.pipe_outlet_code,
                        a.kyc_status,
-                       a.bank_sync_status
+                       a.bank_sync_status,
+                       c.config_json::text AS config_json
                   FROM provider_pipe_activations a
                   JOIN service_provider_channels c ON c.id = a.channel_id
                   JOIN provider_merchant_accounts m ON m.id = a.merchant_account_id
@@ -108,20 +112,25 @@ public class ServiceProviderRouter {
         String strategy = String.valueOf(policy.getOrDefault("strategy", "ROUND_ROBIN")).toUpperCase(Locale.ROOT);
         Map<String, Object> chosen;
         if ("ROUND_ROBIN".equals(strategy) && candidates.size() > 1) {
-            Long nextCounter = jdbc.queryForObject("""
-                    UPDATE service_routing_policies
-                       SET rr_counter = rr_counter + 1,
-                           updated_at = now()
-                     WHERE service_code = ?
-                 RETURNING rr_counter
-                    """, Long.class, svc);
-            long idx = Math.floorMod((nextCounter == null ? 1L : nextCounter) - 1L, candidates.size());
-            chosen = candidates.get((int) idx);
+            long counter = policy.get("rr_counter") instanceof Number n ? n.longValue() : 0L;
+            chosen = candidates.get((int) Math.floorMod(counter, candidates.size()));
         } else {
             chosen = candidates.get(0);
         }
 
         return toRoutedChannel(chosen);
+    }
+
+    /** Advances round-robin only after the provider call itself succeeded. */
+    public void noteSuccessfulSelection(String serviceCode) {
+        String svc = normalizeService(serviceCode);
+        jdbc.update("""
+                UPDATE service_routing_policies
+                   SET rr_counter = rr_counter + 1,
+                       updated_at = now()
+                 WHERE service_code = ?
+                   AND strategy = 'ROUND_ROBIN'
+                """, svc);
     }
 
     public RoutedChannel resolveSpecificChannelForUser(UUID userId, UUID channelId) {
@@ -133,7 +142,8 @@ public class ServiceProviderRouter {
                        m.outlet_code,
                        a.pipe_outlet_code,
                        a.kyc_status,
-                       a.bank_sync_status
+                       a.bank_sync_status,
+                       c.config_json::text AS config_json
                   FROM provider_pipe_activations a
                   JOIN service_provider_channels c ON c.id = a.channel_id
                   JOIN provider_merchant_accounts m ON m.id = a.merchant_account_id
@@ -227,7 +237,16 @@ public class ServiceProviderRouter {
                 str(row.get("outlet_code")),
                 str(row.get("pipe_outlet_code")),
                 str(row.get("kyc_status")),
-                str(row.get("bank_sync_status")));
+                str(row.get("bank_sync_status")),
+                jsonText(row.get("config_json")));
+    }
+
+    private static String jsonText(Object value) {
+        if (value == null) {
+            return "{}";
+        }
+        String text = String.valueOf(value).trim();
+        return text.isBlank() || "null".equals(text) ? "{}" : text;
     }
 
     private static String normalizeService(String raw) {

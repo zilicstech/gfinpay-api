@@ -22,6 +22,13 @@ public class TransactionService {
             "PENDING", Set.of("SUCCESS", "FAILED", "REVERSED"),
             "SUCCESS", Set.of("REVERSED"));
 
+    public static boolean allowed(String current, String to) {
+        if (current == null || to == null || to.equals(current)) {
+            return false;
+        }
+        return ALLOWED.getOrDefault(current, Set.of()).contains(to);
+    }
+
     private final JdbcTemplate jdbc;
 
     public TransactionService(JdbcTemplate jdbc) {
@@ -53,8 +60,7 @@ public class TransactionService {
         if (to.equals(current)) {
             return false;
         }
-        Set<String> allowed = ALLOWED.getOrDefault(current, Set.of());
-        if (!allowed.contains(to)) {
+        if (!allowed(current, to)) {
             log.info("TXN_TRANSITION no-op txnId={} current={} requested={}", txnId, current, to);
             return false;
         }

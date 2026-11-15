@@ -11,7 +11,7 @@ class EmeraldMessageSanitizerTest {
 
     @Test
     void stripsAllVendorPipeOutletAndEntityIdentifiers() {
-        String raw = "Pipe sync failed: Emerald InstantPay rejected outlet OUT_57_05 on https://myemerald.in/v1 (code EMD00099 ENT000057 UPITOCASH9001)";
+        String raw = "Pipe sync failed: Emerald InstantPay rejected outlet OUT_57_05 on https://myemerald.in/v1 (code EMD00099 ENT000057 UPITOCASH9001 UPICASH00001)";
         String sanitized = EmeraldMessageSanitizer.sanitize(raw, "Fallback error");
 
         String lower = sanitized.toLowerCase(Locale.ROOT);
@@ -23,6 +23,7 @@ class EmeraldMessageSanitizerTest {
         assertFalse(lower.contains("emd00099"), "Must strip EMD code: " + sanitized);
         assertFalse(lower.contains("ent000057"), "Must strip entity code: " + sanitized);
         assertFalse(lower.contains("upitocash"), "Must strip product code: " + sanitized);
+        assertFalse(lower.contains("upicash"), "Must strip UPICASH code: " + sanitized);
     }
 
     @Test

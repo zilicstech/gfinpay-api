@@ -69,9 +69,15 @@ public class VerificationGate {
     }
 
     private String status(UUID userId, String column) {
+        String sql = switch (column) {
+            case "identity_status" -> "SELECT identity_status FROM agent_kyc_profiles WHERE user_id = ?";
+            case "bank_verification_status" -> "SELECT bank_verification_status FROM agent_kyc_profiles WHERE user_id = ?";
+            case "business_status" -> "SELECT business_status FROM agent_kyc_profiles WHERE user_id = ?";
+            case "agreement_status" -> "SELECT agreement_status FROM agent_kyc_profiles WHERE user_id = ?";
+            default -> throw new IllegalArgumentException("Unsupported status column");
+        };
         try {
-            String value = jdbc.queryForObject(
-                    "SELECT " + column + " FROM agent_kyc_profiles WHERE user_id = ?", String.class, userId);
+            String value = jdbc.queryForObject(sql, String.class, userId);
             return value == null ? "NOT_VERIFIED" : value;
         } catch (EmptyResultDataAccessException e) {
             return "NOT_VERIFIED";

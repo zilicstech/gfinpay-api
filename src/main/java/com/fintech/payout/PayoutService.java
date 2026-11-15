@@ -1,16 +1,23 @@
 package com.fintech.payout;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fintech.emerald.EmeraldClient;
 import com.fintech.emerald.EmeraldMessageSanitizer;
 import com.fintech.emerald.EmeraldTraceContext;
 import com.fintech.ledger.LedgerService;
 import com.fintech.ledger.TransactionService;
 import com.fintech.ledger.WalletService;
 import com.fintech.platform.PlatformServiceGate;
+import com.fintech.platform.idempotency.ExternalRefs;
+import com.fintech.platform.idempotency.IdempotencyService;
+import com.fintech.platform.outbox.OutboxWriter;
 import com.fintech.platform.security.AuthPrincipal;
+import com.fintech.platform.tx.ShortTransactions;
 import com.fintech.platform.web.ApiException;
+import com.fintech.provider.ProviderDispatch;
+import com.fintech.provider.ProviderRegistry;
 import com.fintech.provider.ServiceProviderRouter;
+import com.fintech.provider.canonical.ProviderModels;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
@@ -20,7 +27,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ThreadLocalRandom;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -48,10 +54,14 @@ public class PayoutService {
     private final ObjectMapper mapper;
     private final PlatformServiceGate services;
     private final ServiceProviderRouter router;
-    private final EmeraldClient emeraldClient;
+    private final ProviderRegistry providers;
+    private final ProviderDispatch dispatch;
     private final WalletService walletService;
     private final LedgerService ledgerService;
     private final TransactionService transactionService;
+    private final ShortTransactions shortTx;
+    private final IdempotencyService idempotency;
+    private final OutboxWriter outbox;
     private final int minCashoutTxns;
     private final BigDecimal minAmount;
     private final BigDecimal maxAmount;
@@ -61,10 +71,14 @@ public class PayoutService {
             ObjectMapper mapper,
             PlatformServiceGate services,
             ServiceProviderRouter router,
-            EmeraldClient emeraldClient,
+            ProviderRegistry providers,
+            ProviderDispatch dispatch,
             WalletService walletService,
             LedgerService ledgerService,
             TransactionService transactionService,
+            ShortTransactions shortTx,
+            IdempotencyService idempotency,
+            OutboxWriter outbox,
             @Value("${app.payout.min-cashout-txns:7}") int minCashoutTxns,
             @Value("${app.payout.min-amount:100}") BigDecimal minAmount,
             @Value("${app.payout.max-amount:200000}") BigDecimal maxAmount) {
@@ -72,10 +86,14 @@ public class PayoutService {
         this.mapper = mapper;
         this.services = services;
         this.router = router;
-        this.emeraldClient = emeraldClient;
+        this.providers = providers;
+        this.dispatch = dispatch;
         this.walletService = walletService;
         this.ledgerService = ledgerService;
         this.transactionService = transactionService;
+        this.shortTx = shortTx;
+        this.idempotency = idempotency;
+        this.outbox = outbox;
         this.minCashoutTxns = Math.max(1, minCashoutTxns);
         this.minAmount = minAmount.setScale(2, RoundingMode.HALF_UP);
         this.maxAmount = maxAmount.setScale(2, RoundingMode.HALF_UP);
@@ -192,14 +210,14 @@ public class PayoutService {
         return out;
     }
 
-    @Transactional(noRollbackFor = ApiException.class)
     public Map<String, Object> initiatePayout(
             AuthPrincipal me,
             BigDecimal rawAmount,
             String transferModeRaw,
             String remarksRaw,
             String latitudeRaw,
-            String longitudeRaw) {
+            String longitudeRaw,
+            String idempotencyKey) {
         services.requireEnabled(PlatformServiceGate.PAYOUT);
         UUID userId = me.userId();
 
@@ -242,7 +260,8 @@ public class PayoutService {
         }
         assertBranchSupportsMode(bank.get("ifsc_details_json"), mode);
 
-        ServiceProviderRouter.RoutedChannel channel = router.selectChannel(userId, ServiceProviderRouter.PAYOUT);
+        ProviderDispatch.RoutedPayout route = dispatch.payout(userId);
+        ServiceProviderRouter.RoutedChannel channel = route.channel();
         if (!"SYNCED".equalsIgnoreCase(channel.bankSyncStatus())) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "BANK_NOT_SYNCED",
                     "Your settlement bank account is pending banking switch verification.");
@@ -250,8 +269,85 @@ public class PayoutService {
 
         BigDecimal fee = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
         BigDecimal totalDebit = amount.add(fee);
+        String idemKey = ExternalRefs.requireKey(idempotencyKey);
+        String canonical = amount.toPlainString() + "|" + mode + "|" + cleanRemarks + "|" + lat.toPlainString() + "|" + lng.toPlainString();
+        IdempotencyService.Claim claim = idempotency.claim(userId, idemKey, canonical);
+        if (claim.replay()) {
+            if (claim.responseCode() != null && claim.responseCode() >= 400) {
+                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "PAYOUT_DECLINED", claim.responseBody());
+            }
+            return readReplay(claim.responseBody());
+        }
+        String externalRef = ExternalRefs.fromKey("PO", claim.keyId());
+        var port = route.port();
 
-        // Lock wallet and place HOLD before external HTTP call
+        HeldPayout hold = shortTx.required(() -> placeHold(
+                userId, channel, bank, amount, fee, totalDebit, externalRef, mode, lat, lng, cleanRemarks));
+
+        ProviderModels.PayoutResult payRes;
+        try (var ignored = EmeraldTraceContext.open(userId, "STEP4_PAYOUT", externalRef)) {
+            payRes = port.submit(channel, new ProviderModels.PayoutRequest(
+                    hold.accHolder(),
+                    hold.accNumber(),
+                    hold.ifsc(),
+                    mode,
+                    amount.toPlainString(),
+                    externalRef,
+                    lat.toPlainString(),
+                    lng.toPlainString(),
+                    cleanRemarks));
+        } catch (RuntimeException ex) {
+            log.warn("PAYOUT provider call inconclusive id={} ref={}: {}", hold.payoutId(), externalRef, ex.getMessage());
+            payRes = new ProviderModels.PayoutResult(ProviderModels.Outcome.PENDING, "TIMEOUT",
+                    "Awaiting bank confirmation", "", "");
+        }
+        if (!"TIMEOUT".equals(payRes.statusCode())) {
+            try {
+                router.noteSuccessfulSelection(ServiceProviderRouter.PAYOUT);
+            } catch (RuntimeException ex) {
+                log.warn("PAYOUT round-robin note failed ref={}: {}", externalRef, ex.getMessage());
+            }
+        }
+
+        ProviderModels.PayoutResult outcome = payRes;
+        try {
+            Map<String, Object> view = shortTx.required(() -> applyPayoutOutcome(hold, outcome));
+            completeIdempotency(claim.keyId(), 200, view);
+            return view;
+        } catch (ApiException ex) {
+            try {
+                idempotency.complete(claim.keyId(), ex.getStatus().value(), ex.getMessage());
+            } catch (Exception ignored) {
+                log.warn("PAYOUT idempotency complete failed key={}", claim.keyId());
+            }
+            throw ex;
+        }
+    }
+
+    private record HeldPayout(
+            UUID payoutId,
+            UUID txnId,
+            UUID walletId,
+            BigDecimal totalDebit,
+            BigDecimal amount,
+            String externalRef,
+            String accHolder,
+            String accNumber,
+            String ifsc
+    ) {}
+
+    private HeldPayout placeHold(
+            UUID userId,
+            ServiceProviderRouter.RoutedChannel channel,
+            Map<String, Object> bank,
+            BigDecimal amount,
+            BigDecimal fee,
+            BigDecimal totalDebit,
+            String externalRef,
+            String mode,
+            BigDecimal lat,
+            BigDecimal lng,
+            String cleanRemarks) {
         WalletService.WalletInfo wallet = walletService.lockByUser(userId);
         if (!wallet.active()) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "WALLET_FROZEN", "Your operating wallet is frozen.");
@@ -260,9 +356,6 @@ public class PayoutService {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INSUFFICIENT_BALANCE",
                     "Insufficient wallet balance for this payout.");
         }
-
-        String externalRef = "POUT" + System.currentTimeMillis()
-                + String.format("%04d", ThreadLocalRandom.current().nextInt(10000));
         String accHolder = str(bank.get("account_name"));
         String accNumber = str(bank.get("account_number"));
         String maskedAcc = maskAccount(accNumber);
@@ -271,15 +364,7 @@ public class PayoutService {
         UUID bankId = (UUID) bank.get("id");
 
         UUID txnId = transactionService.create(
-                "PAYOUT",
-                userId,
-                wallet.walletId(),
-                amount,
-                fee,
-                null,
-                null,
-                channel.providerCode(),
-                null);
+                "PAYOUT", userId, wallet.walletId(), amount, fee, null, null, channel.providerCode(), null);
         transactionService.transition(txnId, "HOLD", externalRef, null);
         setCustomerRefJson(txnId, Map.of(
                 "beneficiaryName", accHolder,
@@ -288,7 +373,6 @@ public class PayoutService {
                 "bankName", bankName,
                 "transferMode", mode,
                 "externalRef", externalRef));
-
         ledgerService.post(txnId, wallet.walletId(), "DEBIT", totalDebit, "Settlement payout (" + mode + " " + maskedAcc + ")");
         walletService.adjustCache(wallet.walletId(), totalDebit.negate(), totalDebit);
 
@@ -305,77 +389,72 @@ public class PayoutService {
                 bankId, externalRef, mode, amount, fee,
                 accHolder, maskedAcc, ifsc, bankName,
                 lat, lng, cleanRemarks);
+        return new HeldPayout(payoutId, txnId, wallet.walletId(), totalDebit, amount, externalRef, accHolder, accNumber, ifsc);
+    }
 
-        EmeraldClient.PayoutResponse payRes;
-        try (var ignored = EmeraldTraceContext.open(userId, "STEP4_PAYOUT", externalRef)) {
-            payRes = emeraldClient.executePayout(
-                    channel.outletCode(),
-                    new EmeraldClient.PayoutPayRequest(
-                            accHolder,
-                            accNumber,
-                            ifsc,
-                            mode,
-                            amount.toPlainString(),
-                            externalRef,
-                            lat.toPlainString(),
-                            lng.toPlainString(),
-                            cleanRemarks));
-        }
-
-        if ("SUCCESS".equals(payRes.outcome())) {
-            String utr = firstNonBlank(payRes.utr(), payRes.txnId(), externalRef);
+    private Map<String, Object> applyPayoutOutcome(HeldPayout hold, ProviderModels.PayoutResult payRes) {
+        UUID payoutId = hold.payoutId();
+        UUID txnId = hold.txnId();
+        if (payRes.outcome() == ProviderModels.Outcome.SUCCESS) {
+            String utr = firstNonBlank(payRes.utr(), payRes.txnId(), hold.externalRef());
             if (transactionService.transition(txnId, "SUCCESS", utr, null)) {
-                walletService.lockByWalletId(wallet.walletId());
-                walletService.adjustCache(wallet.walletId(), BigDecimal.ZERO, totalDebit.negate());
+                walletService.lockByWalletId(hold.walletId());
+                walletService.adjustCache(hold.walletId(), BigDecimal.ZERO, hold.totalDebit().negate());
             }
             jdbc.update("""
                     UPDATE payout_transfers
-                       SET status = 'SUCCESS',
-                           provider_txn_id = ?,
-                           utr = ?,
-                           provider_status_code = ?,
-                           provider_message = ?,
-                           updated_at = now()
+                       SET status = 'SUCCESS', provider_txn_id = ?, utr = ?,
+                           provider_status_code = ?, provider_message = ?, updated_at = now()
                      WHERE id = ?
                     """, blankToNull(payRes.txnId()), utr, payRes.statusCode(), payRes.message(), payoutId);
-            log.info("PAYOUT settled immediately id={} txnId={} amount={} utr={}", payoutId, txnId, amount, utr);
-        } else if ("PENDING".equals(payRes.outcome())) {
-            String pRef = firstNonBlank(payRes.txnId(), externalRef);
+            log.info("PAYOUT settled immediately id={} txnId={} amount={} utr={}", payoutId, txnId, hold.amount(), utr);
+        } else if (payRes.outcome() == ProviderModels.Outcome.PENDING) {
+            String pRef = firstNonBlank(payRes.txnId(), hold.externalRef());
             transactionService.transition(txnId, "PENDING", pRef, null);
             jdbc.update("""
                     UPDATE payout_transfers
-                       SET status = 'PENDING',
-                           provider_txn_id = ?,
-                           provider_status_code = ?,
-                           provider_message = ?,
-                           updated_at = now()
+                       SET status = 'PENDING', provider_txn_id = ?,
+                           provider_status_code = ?, provider_message = ?, updated_at = now()
                      WHERE id = ?
                     """, blankToNull(payRes.txnId()), payRes.statusCode(), payRes.message(), payoutId);
-            log.info("PAYOUT pending confirmation id={} txnId={} amount={} code={}", payoutId, txnId, amount, payRes.statusCode());
+            outbox.write("PAYOUT", payoutId, "PAYOUT_STATUS_CHECK",
+                    "{\"transactionId\":\"" + txnId + "\"}");
+            log.info("PAYOUT pending confirmation id={} txnId={} amount={} code={}", payoutId, txnId, hold.amount(), payRes.statusCode());
         } else {
             String cleanReason = EmeraldMessageSanitizer.sanitize(
                     payRes.message(),
                     "Bank declined the settlement transfer. Your wallet balance has been restored.");
             if (transactionService.transition(txnId, "FAILED", blankToNull(payRes.txnId()), cleanReason)) {
-                walletService.lockByWalletId(wallet.walletId());
-                ledgerService.post(txnId, wallet.walletId(), "CREDIT", totalDebit, "Settlement payout reversal");
-                walletService.adjustCache(wallet.walletId(), totalDebit, totalDebit.negate());
+                walletService.lockByWalletId(hold.walletId());
+                ledgerService.post(txnId, hold.walletId(), "CREDIT", hold.totalDebit(), "Settlement payout reversal");
+                walletService.adjustCache(hold.walletId(), hold.totalDebit(), hold.totalDebit().negate());
             }
             jdbc.update("""
                     UPDATE payout_transfers
-                       SET status = 'FAILED',
-                           provider_txn_id = ?,
-                           provider_status_code = ?,
-                           provider_message = ?,
-                           updated_at = now()
+                       SET status = 'FAILED', provider_txn_id = ?,
+                           provider_status_code = ?, provider_message = ?, updated_at = now()
                      WHERE id = ?
                     """, blankToNull(payRes.txnId()), payRes.statusCode(), cleanReason, payoutId);
-            log.warn("PAYOUT declined & reversed id={} txnId={} code={} reason={}",
-                    payoutId, txnId, payRes.statusCode(), payRes.message());
+            log.warn("PAYOUT declined & reversed id={} txnId={} code={}", payoutId, txnId, payRes.statusCode());
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "PAYOUT_DECLINED", cleanReason);
         }
-
         return view(loadById(payoutId));
+    }
+
+    private Map<String, Object> readReplay(String body) {
+        try {
+            return mapper.readValue(body, new TypeReference<>() {});
+        } catch (Exception e) {
+            throw ApiException.of(HttpStatus.CONFLICT, "IDEMPOTENCY_REPLAY", "Stored response could not be read");
+        }
+    }
+
+    private void completeIdempotency(UUID keyId, int code, Map<String, Object> body) {
+        try {
+            idempotency.complete(keyId, code, mapper.writeValueAsString(body));
+        } catch (Exception e) {
+            log.warn("PAYOUT idempotency complete failed key={}: {}", keyId, e.getMessage());
+        }
     }
 
     public List<Map<String, Object>> history(AuthPrincipal me) {
@@ -391,35 +470,54 @@ public class PayoutService {
                 .toList();
     }
 
-    @Transactional
     public Map<String, Object> reconcileByTransactionId(UUID transactionId) {
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT * FROM payout_transfers WHERE transaction_id = ? FOR UPDATE", transactionId);
+                "SELECT * FROM payout_transfers WHERE transaction_id = ?", transactionId);
         if (rows.isEmpty()) {
             return Map.of("matched", false);
         }
         Map<String, Object> row = rows.get(0);
         String curStatus = str(row.get("status"));
-        if ("HOLD".equals(curStatus) || "PENDING".equals(curStatus)) {
-            UUID payoutUserId = (UUID) row.get("user_id");
-            String outletCode = str(row.get("outlet_code"));
-            String externalRef = str(row.get("external_ref"));
-            String providerTxnId = str(row.get("provider_txn_id"));
-            EmeraldClient.GenericApiResponse st;
-            try (var ignored = EmeraldTraceContext.open(payoutUserId, "STEP6_PAYOUT_STATUS", externalRef)) {
-                st = emeraldClient.checkPayoutStatus(outletCode, externalRef, providerTxnId);
-            }
-            if (!"UNCONFIGURED".equals(st.statusCode()) && st.httpStatus() > 0) {
-                String upStatus = firstNonBlank(str(st.data().get("status")), st.statusCode()).toUpperCase(Locale.ROOT);
-                String utr = firstNonBlank(str(st.data().get("utr")), str(st.data().get("rrn")), str(st.data().get("txnId")));
-                if ("SUCCESS".equals(upStatus) || "2000".equals(upStatus)) {
-                    applyFinalStatusToLockedPayout(row, "SUCCESS", st.message(), utr, providerTxnId);
-                } else if ("FAILED".equals(upStatus) || "REVERSED".equals(upStatus)) {
-                    applyFinalStatusToLockedPayout(row, upStatus, st.message(), utr, providerTxnId);
-                }
-            }
+        if (!"HOLD".equals(curStatus) && !"PENDING".equals(curStatus)) {
+            return view(row);
         }
-        return view(loadById((UUID) row.get("id")));
+        ProviderModels.PayoutStatus upstream = pollPayout(row);
+        if (upstream == null || upstream.outcome() == ProviderModels.Outcome.PENDING) {
+            return view(loadById((UUID) row.get("id")));
+        }
+        return shortTx.required(() -> {
+            List<Map<String, Object>> locked = jdbc.queryForList(
+                    "SELECT * FROM payout_transfers WHERE transaction_id = ? FOR UPDATE", transactionId);
+            if (locked.isEmpty()) {
+                return Map.of("matched", false);
+            }
+            Map<String, Object> current = locked.get(0);
+            String lockedStatus = str(current.get("status"));
+            if ("HOLD".equals(lockedStatus) || "PENDING".equals(lockedStatus)) {
+                String target = upstream.outcome() == ProviderModels.Outcome.SUCCESS ? "SUCCESS" : "FAILED";
+                applyFinalStatusToLockedPayout(current, target, upstream.message(), upstream.utr(), upstream.txnId());
+            }
+            return view(loadById((UUID) current.get("id")));
+        });
+    }
+
+    private ProviderModels.PayoutStatus pollPayout(Map<String, Object> row) {
+        String providerCode = str(row.get("provider_code"));
+        String outletCode = str(row.get("outlet_code"));
+        String externalRef = str(row.get("external_ref"));
+        String providerTxnId = str(row.get("provider_txn_id"));
+        if (providerCode.isBlank() || outletCode.isBlank()) {
+            return null;
+        }
+        try (var ignored = EmeraldTraceContext.open((UUID) row.get("user_id"), "STEP6_PAYOUT_STATUS", externalRef)) {
+            ServiceProviderRouter.RoutedChannel channel = new ServiceProviderRouter.RoutedChannel(
+                    (UUID) row.get("channel_id"), "", providerCode, str(row.get("pipe_code")),
+                    outletCode, "", "", "", "{}");
+            return providers.payout(providerCode).checkStatus(channel, externalRef, providerTxnId);
+        } catch (Exception ex) {
+            log.warn("PAYOUT status poll warning id={}: {}", row.get("id"), ex.getMessage());
+            return null;
+        }
     }
 
     @Transactional

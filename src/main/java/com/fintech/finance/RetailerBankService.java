@@ -7,6 +7,7 @@ import com.fintech.onboarding.JourneyTracker;
 import com.fintech.onboarding.NameMatcher;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiException;
+import com.fintech.platform.web.TextValues;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -600,7 +601,7 @@ public class RetailerBankService {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", row.get("id"));
         out.put("account_name", row.get("account_name"));
-        out.put("account_number", row.get("account_number"));
+        out.put("account_number", TextValues.maskAccount(String.valueOf(row.get("account_number") == null ? "" : row.get("account_number"))));
         out.put("ifsc", row.get("ifsc"));
         out.put("bank_name", row.get("bank_name"));
         out.put("account_type", row.getOrDefault("account_type", "SAVINGS"));
