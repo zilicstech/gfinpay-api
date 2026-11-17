@@ -298,6 +298,216 @@ public class BusinessRegistrationService {
                 Map.of("businessType", "INDIVIDUAL", "locationSource", locationSource, "signatoryName", verifiedName));
     }
 
+    @Transactional
+    public void updateBusinessLocation(
+            AuthPrincipal me,
+            String locationSourceRaw,
+            String latitudeRaw,
+            String longitudeRaw,
+            String shopNameRaw,
+            AddressFormatter.BusinessAddressInput customAddress) {
+        requirePartner(me);
+        UUID userId = me.userId();
+        ensureProfileAndRequireIdentity(userId);
+        applyBusinessLocationUpdate(
+                userId,
+                locationSourceRaw,
+                latitudeRaw,
+                longitudeRaw,
+                shopNameRaw,
+                customAddress,
+                false,
+                null);
+    }
+
+    private void applyBusinessLocationUpdate(
+            UUID userId,
+            String locationSourceRaw,
+            String latitudeRaw,
+            String longitudeRaw,
+            String shopNameRaw,
+            AddressFormatter.BusinessAddressInput customAddress,
+            boolean autoApprove,
+            UUID adminReviewerId) {
+        Map<String, Object> profile = loadProfile(userId);
+        Map<String, Object> userRow = loadUser(userId);
+        Map<String, Object> personalMap = jsonMap(profile.get("personal_details"));
+        if (personalMap.isEmpty()) {
+            personalMap = jsonMap(profile.get("identity_details"));
+        }
+        Map<String, Object> permanentAddress = extractPermanentAddress(personalMap);
+
+        String locationSource = (locationSourceRaw == null || locationSourceRaw.isBlank())
+                ? "CURRENT_DEVICE"
+                : locationSourceRaw.trim().toUpperCase(Locale.ROOT);
+        if (!"KYC_LOCATION".equals(locationSource) && !"CURRENT_DEVICE".equals(locationSource)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_LOCATION_SOURCE",
+                    "Location source must be KYC_LOCATION or CURRENT_DEVICE");
+        }
+
+        BigDecimal lat;
+        BigDecimal lng;
+        if ("KYC_LOCATION".equals(locationSource) && (latitudeRaw == null || latitudeRaw.isBlank())) {
+            List<Map<String, Object>> kycRows = jdbc.queryForList("""
+                    SELECT latitude, longitude
+                      FROM partner_verification_events
+                     WHERE user_id = ? AND step = 'PERSONAL'
+                     ORDER BY created_at DESC
+                     LIMIT 1
+                    """, userId);
+            if (kycRows.isEmpty()) {
+                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "KYC_LOCATION_UNAVAILABLE",
+                        "No location was recorded during personal KYC. Please capture current GPS coordinates.");
+            }
+            lat = toBigDecimal(kycRows.get(0).get("latitude"));
+            lng = toBigDecimal(kycRows.get(0).get("longitude"));
+        } else {
+            lat = validateCoordinate(latitudeRaw, true);
+            lng = validateCoordinate(longitudeRaw, false);
+        }
+
+        Map<String, Object> existingBiz = new LinkedHashMap<>(jsonMap(profile.get("business_details")));
+        if (!autoApprove && !Boolean.TRUE.equals(existingBiz.get("can_update"))) {
+            throw ApiException.of(HttpStatus.FORBIDDEN, "LOCATION_UPDATE_NOT_ALLOWED",
+                    "Business location can only be updated when requested by an administrator.");
+        }
+        Map<String, Object> existingWorkAddr = jsonMap(profile.get("work_address"));
+        if (existingWorkAddr.isEmpty()) {
+            existingWorkAddr = jsonMap(profile.get("shop_address"));
+        }
+
+        Map<String, Object> workAddress;
+        if (customAddress == null) {
+            if (!existingWorkAddr.isEmpty()) {
+                workAddress = new LinkedHashMap<>(existingWorkAddr);
+                workAddress.put("latitude", lat);
+                workAddress.put("longitude", lng);
+            } else {
+                workAddress = AddressFormatter.copyFromPermanentAddress(
+                        permanentAddress,
+                        text(personalMap.get("address")),
+                        text(personalMap.get("city")),
+                        text(personalMap.get("state")),
+                        text(personalMap.get("pincode")),
+                        null,
+                        lat,
+                        lng);
+            }
+        } else if (Boolean.TRUE.equals(customAddress.sameAsPersonal())
+                || customAddress.line1() == null
+                || customAddress.line1().isBlank()) {
+            workAddress = AddressFormatter.copyFromPermanentAddress(
+                    permanentAddress,
+                    text(personalMap.get("address")),
+                    text(personalMap.get("city")),
+                    text(personalMap.get("state")),
+                    text(personalMap.get("pincode")),
+                    null,
+                    lat,
+                    lng);
+        } else {
+            workAddress = AddressFormatter.buildBusinessAddress(
+                    customAddress.line1(),
+                    customAddress.line2(),
+                    customAddress.area(),
+                    customAddress.landmark(),
+                    customAddress.city(),
+                    customAddress.district(),
+                    customAddress.state(),
+                    customAddress.pincode(),
+                    null,
+                    lat,
+                    lng);
+        }
+
+        String fullAddressText = text(workAddress.get("fullAddress"));
+        boolean differsFromPersonal = AddressFormatter.differsFromPersonal(
+                workAddress,
+                permanentAddress,
+                text(personalMap.get("pincode")),
+                text(personalMap.get("state")));
+
+        String verifiedName = firstNonBlank(
+                text(personalMap.get("fullName")),
+                text(userRow.get("full_name")));
+        String resolvedShopName = firstNonBlank(
+                shopNameRaw,
+                text(profile.get("shop_name")),
+                text(existingBiz.get("tradeName")),
+                text(existingBiz.get("legalName")),
+                verifiedName);
+        String resolvedBizType = firstNonBlank(
+                text(profile.get("business_type")),
+                text(existingBiz.get("businessType")),
+                "INDIVIDUAL");
+
+        existingBiz.put("businessType", resolvedBizType);
+        existingBiz.putIfAbsent("entityType", "COMPANY".equalsIgnoreCase(resolvedBizType) ? "PRIVATE_LIMITED" : "INDIVIDUAL");
+        existingBiz.putIfAbsent("legalName", verifiedName);
+        existingBiz.put("tradeName", resolvedShopName);
+        existingBiz.put("address", workAddress);
+        existingBiz.put("addressText", fullAddressText);
+        existingBiz.put("addressDiffersFromPersonal", differsFromPersonal);
+        existingBiz.put("workLocationSource", locationSource);
+        existingBiz.put("workLatitude", lat);
+        existingBiz.put("workLongitude", lng);
+        existingBiz.put("locationUpdatedAt", Instant.now().toString());
+        if (autoApprove) {
+            existingBiz.put("can_update", false);
+            existingBiz.remove("locationUpdatePending");
+        } else {
+            existingBiz.put("can_update", true);
+            existingBiz.put("locationUpdatePending", true);
+        }
+
+        Map<String, Object> shopAddress = new LinkedHashMap<>(workAddress);
+        shopAddress.put("address", fullAddressText);
+
+        if (autoApprove) {
+            jdbc.update("""
+                    UPDATE agent_kyc_profiles
+                       SET business_type = COALESCE(business_type, ?),
+                           business_status = 'BUSINESS_VERIFIED',
+                           business_verified = TRUE,
+                           business_reviewed_by = COALESCE(?, business_reviewed_by),
+                           business_reviewed_at = now(),
+                           business_review_note = 'Business location updated and approved by Admin',
+                           work_latitude = ?,
+                           work_longitude = ?,
+                           work_location_source = ?,
+                           work_address = ?::jsonb,
+                           business_details = ?::jsonb,
+                           shop_address = ?::jsonb,
+                           shop_name = ?,
+                           updated_at = now()
+                     WHERE user_id = ?
+                    """,
+                    resolvedBizType, adminReviewerId, lat, lng, locationSource,
+                    json(workAddress), json(existingBiz), json(shopAddress), resolvedShopName, userId);
+        } else {
+            jdbc.update("""
+                    UPDATE agent_kyc_profiles
+                       SET business_type = COALESCE(business_type, ?),
+                           business_status = 'UNDER_REVIEW',
+                           business_verified = FALSE,
+                           business_review_note = 'Business location updated by retailer — pending admin approval',
+                           work_latitude = ?,
+                           work_longitude = ?,
+                           work_location_source = ?,
+                           work_address = ?::jsonb,
+                           business_details = ?::jsonb,
+                           shop_address = ?::jsonb,
+                           shop_name = ?,
+                           updated_at = now()
+                     WHERE user_id = ?
+                    """,
+                    resolvedBizType, lat, lng, locationSource,
+                    json(workAddress), json(existingBiz), json(shopAddress), resolvedShopName, userId);
+        }
+
+        recordBusinessEvent(userId, lat, lng, autoApprove ? "ADMIN_LOCATION_UPDATE" : "RETAILER_LOCATION_UPDATE", existingBiz);
+    }
+
     public Map<String, Object> lookupCompany(AuthPrincipal me, String cinRaw) {
         requirePartner(me);
         UUID userId = me.userId();
@@ -823,7 +1033,11 @@ public class BusinessRegistrationService {
     private Map<String, Object> loadProfile(UUID userId) {
         try {
             return jdbc.queryForMap("""
-                    SELECT business_status, aadhaar_last4, aadhaar_enc, gstin,
+                    SELECT business_status, business_type, shop_name, aadhaar_last4, aadhaar_enc, gstin,
+                           work_latitude, work_longitude, work_location_source,
+                           work_address::text AS work_address,
+                           shop_address::text AS shop_address,
+                           business_details::text AS business_details,
                            personal_details::text AS personal_details,
                            identity_details::text AS identity_details
                       FROM agent_kyc_profiles

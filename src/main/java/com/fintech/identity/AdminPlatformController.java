@@ -282,6 +282,12 @@ public class AdminPlatformController {
         return ApiResponse.ok(admin.requireReverification(id));
     }
 
+    @PostMapping("/users/{id}/request-location-update")
+    @PreAuthorize("hasAuthority('users.onboard')")
+    public ApiResponse<Map<String, Object>> requestLocationUpdate(@PathVariable UUID id) {
+        return ApiResponse.ok(admin.requestLocationUpdate(id));
+    }
+
     @PatchMapping("/users/{id}/hub")
     @PreAuthorize("hasAuthority('settings.manage')")
     public ApiResponse<Map<String, Object>> hubAssign(@PathVariable UUID id, @Valid @RequestBody HubAssignRequest req) {
@@ -381,6 +387,21 @@ public class AdminPlatformController {
     @PreAuthorize("hasAnyAuthority('users.onboard','finance.review','settings.manage')")
     public ApiResponse<Map<String, Object>> verifyTxnStatus(@PathVariable UUID id) {
         return ApiResponse.ok(statusVerification.verifyForAdmin(id));
+    }
+
+    public record AdminResolveTxnRequest(
+            @NotBlank String action,
+            String partnerRef,
+            String reason
+    ) {}
+
+    @PostMapping("/transactions/{id}/resolve")
+    @PreAuthorize("hasAnyAuthority('users.onboard','finance.review','settings.manage')")
+    public ApiResponse<Map<String, Object>> resolveTxnStatus(
+            @AuthenticationPrincipal AuthPrincipal me,
+            @PathVariable UUID id,
+            @Valid @RequestBody AdminResolveTxnRequest req) {
+        return ApiResponse.ok(statusVerification.adminResolve(me, id, req.action(), req.partnerRef(), req.reason()));
     }
 
     @GetMapping("/recon")

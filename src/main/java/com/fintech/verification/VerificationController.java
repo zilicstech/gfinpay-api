@@ -97,6 +97,14 @@ public class VerificationController {
 
     public record AgreementRequest(String signatoryName, String latitude, String longitude) {}
 
+    public record BusinessLocationUpdateRequest(
+            String locationSource,
+            String latitude,
+            String longitude,
+            String shopName,
+            AddressFormatter.BusinessAddressInput address
+    ) {}
+
     public record BusinessReviewRequest(@NotNull Boolean approve, String note) {}
 
     public record FaceReviewRequest(@NotNull Boolean matched, String note) {}
@@ -175,6 +183,20 @@ public class VerificationController {
                 body.email(),
                 body.aadhaarNumber(),
                 body.gstin()));
+    }
+
+    @PostMapping("/business/location")
+    @PreAuthorize("isAuthenticated()")
+    public ApiResponse<Map<String, Object>> updateBusinessLocation(
+            @AuthenticationPrincipal AuthPrincipal me,
+            @RequestBody BusinessLocationUpdateRequest body) {
+        return ApiResponse.ok(verification.updateBusinessLocation(
+                me,
+                body.locationSource(),
+                body.latitude(),
+                body.longitude(),
+                body.shopName(),
+                body.address()));
     }
 
     @PostMapping("/business/company/lookup")

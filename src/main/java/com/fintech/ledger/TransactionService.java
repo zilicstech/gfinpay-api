@@ -17,7 +17,7 @@ public class TransactionService {
     private static final Logger log = LoggerFactory.getLogger(TransactionService.class);
 
     private static final Map<String, Set<String>> ALLOWED = Map.of(
-            "INITIATED", Set.of("HOLD", "PENDING", "SUCCESS", "FAILED"),
+            "INITIATED", Set.of("HOLD", "PENDING", "SUCCESS", "FAILED", "REVERSED"),
             "HOLD", Set.of("PENDING", "SUCCESS", "FAILED", "REVERSED"),
             "PENDING", Set.of("SUCCESS", "FAILED", "REVERSED"),
             "SUCCESS", Set.of("REVERSED"));

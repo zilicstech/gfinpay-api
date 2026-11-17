@@ -191,6 +191,70 @@ public class DmtCasaLedger {
         return body;
     }
 
+    @Transactional
+    public boolean adminResolveByTransactionId(UUID txnId, boolean confirm, String partnerRef, String reason) {
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT t.id, t.transaction_id, t.agent_user_id, t.amount, t.fee, t.status, t.refund_state,
+                       x.state AS txn_state, x.wallet_id
+                  FROM dmt_transfers t
+                  JOIN transactions x ON x.id = t.transaction_id
+                 WHERE t.transaction_id = ?
+                 FOR UPDATE OF t
+                """, txnId);
+        if (rows.isEmpty()) {
+            return false;
+        }
+        Map<String, Object> row = rows.get(0);
+        String current = String.valueOf(row.get("status"));
+        String refundState = String.valueOf(row.get("refund_state"));
+        BigDecimal amount = (BigDecimal) row.get("amount");
+        BigDecimal total = amount.add((BigDecimal) row.get("fee"));
+        UUID walletId = (UUID) row.get("wallet_id");
+        UUID agentId = (UUID) row.get("agent_user_id");
+        String cleanRef = DmtCasaTexts.blankToNull(partnerRef);
+        String cleanReason = clip((reason == null || reason.isBlank())
+                ? (confirm ? "Manually confirmed by Admin" : "Manually reversed to wallet by Admin")
+                : reason.trim());
+
+        if (confirm) {
+            if (!open(current)) {
+                throw ApiException.of(HttpStatus.CONFLICT, "TRANSFER_ALREADY_RESOLVED",
+                        "DMT transfer is already in state: " + current);
+            }
+            transactionService.transition(txnId, "SUCCESS", cleanRef, null);
+            walletService.lockByWalletId(walletId);
+            walletService.adjustCache(walletId, BigDecimal.ZERO, total.negate());
+            postCommissions(txnId, agentId, amount, walletId);
+            jdbc.update("""
+                    UPDATE dmt_transfers
+                       SET status = 'SUCCESS',
+                           refund_state = 'NONE',
+                           provider_utr = COALESCE(?, provider_utr),
+                           err_msg = ?,
+                           updated_at = now()
+                     WHERE transaction_id = ?
+                    """, cleanRef, cleanReason, txnId);
+            log.info("DMT_CASA admin confirmed txnId={} amount={} ref={}", txnId, amount, cleanRef);
+        } else {
+            if ("AUTO_REFUNDED".equals(refundState) || "REFUNDED".equals(refundState) || "SUCCESS".equals(current)) {
+                throw ApiException.of(HttpStatus.CONFLICT, "TRANSFER_ALREADY_RESOLVED",
+                        "DMT transfer is already settled or refunded");
+            }
+            transactionService.transition(txnId, "REVERSED", cleanRef, cleanReason);
+            creditBack(walletId, txnId, total, "DMT admin reversal: " + cleanReason);
+            jdbc.update("""
+                    UPDATE dmt_transfers
+                       SET status = 'FAILED',
+                           refund_state = 'AUTO_REFUNDED',
+                           err_msg = ?,
+                           updated_at = now()
+                     WHERE transaction_id = ?
+                    """, cleanReason, txnId);
+            log.info("DMT_CASA admin reversed txnId={} total={}", txnId, total);
+        }
+        return true;
+    }
+
     /** No sponsor bank is connected, so DMT cannot move money. */
     public boolean providerReady() {
         return false;

@@ -792,6 +792,26 @@ public class AdminPlatformService {
     }
 
     @Transactional
+    public Map<String, Object> requestLocationUpdate(UUID userId) {
+        access.assertNetworkUser(userId);
+        String type = jdbc.queryForObject("SELECT user_type::text FROM users WHERE id = ?", String.class, userId);
+        if (!"RETAILER".equals(type) && !"MASTER_DISTRIBUTOR".equals(type)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_USER_TYPE",
+                    "Only retailers and distributors can be requested to update business location");
+        }
+        jdbc.update("""
+                INSERT INTO agent_kyc_profiles (user_id, kyc_status, business_details)
+                VALUES (?, 'PENDING', '{"can_update": true}'::jsonb)
+                ON CONFLICT (user_id) DO UPDATE
+                   SET business_details = COALESCE(agent_kyc_profiles.business_details, '{}'::jsonb)
+                                          || jsonb_build_object('can_update', true, 'locationUpdateRequestedAt', now()::text),
+                       updated_at = now()
+                """, userId);
+        log.info("USER_LOCATION_UPDATE_REQUESTED userId={} by={}", userId, access.me().userId());
+        return getUser(userId);
+    }
+
+    @Transactional
     public Map<String, Object> assignHub(UUID userId, UUID hubId) {
         access.requireSuperAdminOrPlatformAdmin();
         requireActiveHub(hubId);

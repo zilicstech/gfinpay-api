@@ -209,6 +209,18 @@ public class VerificationService {
         return view(me.userId(), false);
     }
 
+    @Transactional
+    public Map<String, Object> updateBusinessLocation(
+            AuthPrincipal me,
+            String locationSource,
+            String latitude,
+            String longitude,
+            String shopName,
+            AddressFormatter.BusinessAddressInput address) {
+        businessRegistration.updateBusinessLocation(me, locationSource, latitude, longitude, shopName, address);
+        return view(me.userId(), false);
+    }
+
     public Map<String, Object> lookupCompanyDetails(AuthPrincipal me, String cin) {
         return businessRegistration.lookupCompany(me, cin);
     }
@@ -538,16 +550,22 @@ public class VerificationService {
             }
         }
         String nextStatus = approve ? "BUSINESS_VERIFIED" : "REJECTED";
+        Map<String, Object> existingBiz = new LinkedHashMap<>(jsonMap(profile.get("business_details")));
+        if (approve) {
+            existingBiz.put("can_update", false);
+            existingBiz.remove("locationUpdatePending");
+        }
         jdbc.update("""
                 UPDATE agent_kyc_profiles
                    SET business_status = ?,
                        business_verified = ?,
+                       business_details = ?::jsonb,
                        business_reviewed_by = ?,
                        business_reviewed_at = now(),
                        business_review_note = ?,
                        updated_at = now()
                  WHERE user_id = ?
-                """, nextStatus, approve, me.userId(), cleanNote, userId);
+                """, nextStatus, approve, json(existingBiz), me.userId(), cleanNote, userId);
 
         journeyTracker.recordUserMilestone(
                 userId,
@@ -743,6 +761,7 @@ public class VerificationService {
         out.put("personalStatus", personalIdentityVerified ? "PERSONAL_VERIFIED" : "NOT_VERIFIED");
         out.put("businessStatus", profile.get("business_status"));
         out.put("businessType", businessType);
+        out.put("can_update", Boolean.TRUE.equals(businessDetailsMap.get("can_update")));
         out.put("workLocation", workLocation);
         out.put("workAddress", jsonMap(profile.get("work_address")));
         out.put("signatory", signatoryView);

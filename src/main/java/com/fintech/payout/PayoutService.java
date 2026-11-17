@@ -521,6 +521,33 @@ public class PayoutService {
     }
 
     @Transactional
+    public boolean adminResolveByTransactionId(
+            UUID transactionId,
+            String targetStatus,
+            String partnerRef,
+            String reason) {
+        List<Map<String, Object>> locked = jdbc.queryForList(
+                "SELECT * FROM payout_transfers WHERE transaction_id = ? FOR UPDATE", transactionId);
+        if (locked.isEmpty()) {
+            return false;
+        }
+        Map<String, Object> row = locked.get(0);
+        String curStatus = str(row.get("status"));
+        if (!"HOLD".equals(curStatus) && !"PENDING".equals(curStatus)) {
+            throw ApiException.of(HttpStatus.CONFLICT, "PAYOUT_ALREADY_RESOLVED",
+                    "Payout is already in terminal state: " + curStatus);
+        }
+        String normTarget = "SUCCESS".equalsIgnoreCase(targetStatus) ? "SUCCESS" : "REVERSED";
+        String msg = (reason == null || reason.isBlank())
+                ? ("SUCCESS".equals(normTarget)
+                        ? "Manually confirmed by Admin"
+                        : "Manually reversed to wallet by Admin")
+                : reason.trim();
+        applyFinalStatusToLockedPayout(row, normTarget, msg, partnerRef, partnerRef);
+        return true;
+    }
+
+    @Transactional
     public UUID finalizeFromCallback(
             String externalRef,
             String providerTxnId,

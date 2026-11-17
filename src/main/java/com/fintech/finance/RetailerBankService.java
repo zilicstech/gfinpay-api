@@ -34,6 +34,29 @@ public class RetailerBankService {
                    branch_name, imps_ref_no, verification_remarks,
                    COALESCE(ifsc_details, '{}'::jsonb)::text AS ifsc_details_json,
                    active, verification_status, verified_name, name_match_score, provider_ref, verified_at,
+                   EXISTS (
+                       SELECT 1
+                         FROM provider_pipe_activations a
+                         JOIN service_provider_channels c ON c.id = a.channel_id
+                        WHERE a.user_id = retailer_bank_accounts.user_id
+                          AND c.supports_payout = TRUE
+                          AND (
+                              a.synced_bank_account_id = retailer_bank_accounts.id
+                              OR (
+                                  a.synced_bank_account_id IS NULL
+                                  AND (a.bank_sync_status = 'SYNCED' OR a.onboarding_status IN ('ONBOARDED', 'ACTIVE'))
+                                  AND retailer_bank_accounts.id = (
+                                      SELECT r2.id
+                                        FROM retailer_bank_accounts r2
+                                       WHERE r2.user_id = retailer_bank_accounts.user_id
+                                         AND r2.active = TRUE
+                                         AND r2.verification_status = 'VERIFIED'
+                                       ORDER BY r2.created_at DESC
+                                       LIMIT 1
+                                  )
+                              )
+                          )
+                   ) AS used_for_settlement,
                    created_at, updated_at
               FROM retailer_bank_accounts
             """;
@@ -157,6 +180,11 @@ public class RetailerBankService {
     public Map<String, Object> update(AuthPrincipal me, UUID id, String accountName, String accountNumber,
                                       String ifsc, String bankName, String accountTypeRaw) {
         Map<String, Object> existing = load(me.userId(), id);
+        if (Boolean.TRUE.equals(existing.get("active"))
+                && "VERIFIED".equalsIgnoreCase(str(existing.get("verification_status")))) {
+            throw ApiException.of(HttpStatus.FORBIDDEN, "BANK_EDIT_NOT_ALLOWED",
+                    "Active and verified bank accounts cannot be edited.");
+        }
         String nextAcc = accountNumber(accountNumber);
         String nextIfsc = ifsc(ifsc);
         String nextType = (accountTypeRaw == null || accountTypeRaw.isBlank())
@@ -203,6 +231,11 @@ public class RetailerBankService {
             String ifscRaw,
             String accountTypeRaw) {
         Map<String, Object> existing = load(me.userId(), id);
+        if (Boolean.TRUE.equals(existing.get("active"))
+                && "VERIFIED".equalsIgnoreCase(str(existing.get("verification_status")))) {
+            throw ApiException.of(HttpStatus.FORBIDDEN, "BANK_EDIT_NOT_ALLOWED",
+                    "Active and verified bank accounts cannot be edited.");
+        }
         String nextAcc = accountNumber(accountNumberRaw);
         String nextIfsc = ifsc(ifscRaw);
         String nextType = (accountTypeRaw == null || accountTypeRaw.isBlank())
@@ -295,7 +328,11 @@ public class RetailerBankService {
 
     @Transactional
     public Map<String, Object> setActiveForUser(UUID userId, UUID id, boolean active) {
-        load(userId, id);
+        Map<String, Object> existing = load(userId, id);
+        if (!active && Boolean.TRUE.equals(existing.get("used_for_settlement"))) {
+            throw ApiException.of(HttpStatus.CONFLICT, "BANK_USED_FOR_SETTLEMENT",
+                    "This bank account is used for onboarding and settlements and cannot be marked inactive.");
+        }
         jdbc.update("""
                 UPDATE retailer_bank_accounts SET active = ?, updated_at = now() WHERE id = ? AND user_id = ?
                 """, active, id, userId);
@@ -611,6 +648,7 @@ public class RetailerBankService {
         out.put("ifsc_details", parseJsonMap(row.get("ifsc_details_json")));
         out.put("active", row.get("active"));
         out.put("verification_status", row.get("verification_status"));
+        out.put("used_for_settlement", Boolean.TRUE.equals(row.get("used_for_settlement")));
         out.put("verified_name", row.get("verified_name"));
         out.put("name_match_score", row.get("name_match_score"));
         out.put("provider_ref", row.get("provider_ref"));
@@ -657,10 +695,21 @@ public class RetailerBankService {
 
     private void markProviderBankSyncStale(UUID userId) {
         jdbc.update("""
-                UPDATE provider_pipe_activations
+                UPDATE provider_pipe_activations a
                    SET bank_sync_status = 'NOT_SYNCED',
                        updated_at = now()
-                 WHERE user_id = ?
+                 WHERE a.user_id = ?
+                   AND (
+                       a.synced_bank_account_id IS NULL
+                       OR NOT EXISTS (
+                           SELECT 1
+                             FROM retailer_bank_accounts r
+                            WHERE r.id = a.synced_bank_account_id
+                              AND r.active = TRUE
+                              AND r.verification_status = 'VERIFIED'
+                       )
+                   )
+                   AND a.bank_sync_status <> 'SYNCED'
                 """, userId);
     }
 

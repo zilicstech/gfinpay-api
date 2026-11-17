@@ -152,7 +152,7 @@ public class ProviderOnboardingService {
             outletCode = createRes.outletCode();
             pipes = createRes.pipes();
 
-            // Idempotent recovery: if merchant mobile/PAN already exists on Emerald under this entity, locate it via /outlets/all
+            // Idempotent recovery: if merchant mobile/PAN already exists on Emerald under this entity, locate it via /outlets/all or existing DB row
             if ((outletCode == null || outletCode.isBlank())
                     && createRes.message() != null
                     && createRes.message().toLowerCase(Locale.ROOT).contains("already")) {
@@ -162,6 +162,19 @@ public class ProviderOnboardingService {
                         outletCode = existing.outletCode();
                         pipes = existing.pipes();
                         break;
+                    }
+                }
+                if (outletCode == null || outletCode.isBlank()) {
+                    List<String> savedCodes = jdbc.queryForList("""
+                            SELECT outlet_code FROM provider_merchant_accounts
+                             WHERE user_id = ? AND provider_code = ?
+                            """, String.class, userId, PROVIDER_EMERALD);
+                    if (!savedCodes.isEmpty() && savedCodes.get(0) != null && !savedCodes.get(0).isBlank()) {
+                        outletCode = savedCodes.get(0).trim();
+                        EmeraldClient.OutletResponse det = emeraldClient.getOutletDetails(outletCode);
+                        if (det.success()) {
+                            pipes = det.pipes();
+                        }
                     }
                 }
             }
@@ -183,6 +196,14 @@ public class ProviderOnboardingService {
                 .orElse(pipes.isEmpty() ? null : pipes.get(0));
 
         String pipeOutletCode = matchedPipe != null ? matchedPipe.pipeOutletCode() : "";
+        String rawPipeStatus = matchedPipe != null ? str(matchedPipe.onboardingStatus()) : "";
+        boolean pipeFailed = "FAILED".equalsIgnoreCase(rawPipeStatus) || "REJECTED".equalsIgnoreCase(rawPipeStatus);
+        String resolvedOnboardingStatus = pipeFailed ? "FAILED" : "ONBOARDED";
+        String lastError = pipeFailed
+                ? (createRes.message() == null || createRes.message().isBlank()
+                        ? "Upstream pipe onboarding failed (" + rawPipeStatus + ")"
+                        : createRes.message())
+                : null;
         boolean alreadyFullKyc = matchedPipe != null && "FULL_KYC".equalsIgnoreCase(matchedPipe.kycStatus());
 
         upsertPipeActivation(
@@ -190,8 +211,9 @@ public class ProviderOnboardingService {
                 channelId,
                 merchantAccountId,
                 pipeOutletCode,
-                "ONBOARDED",
-                alreadyFullKyc ? "FULL_KYC" : "PENDING_BIOMETRIC");
+                resolvedOnboardingStatus,
+                alreadyFullKyc ? "FULL_KYC" : "PENDING_BIOMETRIC",
+                lastError);
 
         log.info("EMERALD onboarded user={} outlet={} pipe={} pipeOutlet={} byAdmin={}",
                 userId, outletCode, pipe, pipeOutletCode, admin.userId());
@@ -644,12 +666,13 @@ public class ProviderOnboardingService {
             UUID merchantAccountId,
             String pipeOutletCode,
             String onboardingStatus,
-            String initialKycStatus) {
+            String initialKycStatus,
+            String lastError) {
         UUID id = UUID.randomUUID();
         jdbc.update("""
                 INSERT INTO provider_pipe_activations
-                    (id, user_id, channel_id, merchant_account_id, pipe_outlet_code, onboarding_status, kyc_status, last_synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, now())
+                    (id, user_id, channel_id, merchant_account_id, pipe_outlet_code, onboarding_status, kyc_status, last_error, last_synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, now())
                 ON CONFLICT (user_id, channel_id) DO UPDATE
                    SET merchant_account_id = EXCLUDED.merchant_account_id,
                        pipe_outlet_code = CASE WHEN EXCLUDED.pipe_outlet_code <> '' THEN EXCLUDED.pipe_outlet_code ELSE provider_pipe_activations.pipe_outlet_code END,
@@ -658,9 +681,11 @@ public class ProviderOnboardingService {
                            WHEN provider_pipe_activations.kyc_status = 'FULL_KYC' THEN 'FULL_KYC'
                            ELSE EXCLUDED.kyc_status
                        END,
+                       last_error = EXCLUDED.last_error,
                        last_synced_at = now(),
                        updated_at = now()
-                """, id, userId, channelId, merchantAccountId, pipeOutletCode == null ? "" : pipeOutletCode, onboardingStatus, initialKycStatus);
+                """, id, userId, channelId, merchantAccountId,
+                pipeOutletCode == null ? "" : pipeOutletCode, onboardingStatus, initialKycStatus, lastError);
     }
 
     private String requireEmeraldOutletCode(UUID userId) {

@@ -3,20 +3,26 @@ package com.fintech.ledger;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fintech.cashout.CashoutService;
+import com.fintech.dmt.DmtCasaLedger;
 import com.fintech.emerald.EmeraldCallbackService;
 import com.fintech.identity.AdminPlatformService;
 import com.fintech.identity.DeskService;
 import com.fintech.payout.PayoutService;
 import com.fintech.platform.security.AuthPrincipal;
+import com.fintech.platform.web.ApiException;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,6 +44,36 @@ public class TransactionStatusVerificationService {
     private final CashoutService cashoutService;
     private final PayoutService payoutService;
     private final EmeraldCallbackService callbackService;
+    private final DmtCasaLedger dmtCasaLedger;
+    private final TransactionService transactionService;
+    private final WalletService walletService;
+    private final LedgerService ledgerService;
+
+    @Autowired
+    public TransactionStatusVerificationService(
+            JdbcTemplate jdbc,
+            ObjectMapper mapper,
+            DeskService deskService,
+            AdminPlatformService adminService,
+            CashoutService cashoutService,
+            PayoutService payoutService,
+            EmeraldCallbackService callbackService,
+            DmtCasaLedger dmtCasaLedger,
+            TransactionService transactionService,
+            WalletService walletService,
+            LedgerService ledgerService) {
+        this.jdbc = jdbc;
+        this.mapper = mapper;
+        this.deskService = deskService;
+        this.adminService = adminService;
+        this.cashoutService = cashoutService;
+        this.payoutService = payoutService;
+        this.callbackService = callbackService;
+        this.dmtCasaLedger = dmtCasaLedger;
+        this.transactionService = transactionService;
+        this.walletService = walletService;
+        this.ledgerService = ledgerService;
+    }
 
     public TransactionStatusVerificationService(
             JdbcTemplate jdbc,
@@ -47,13 +83,8 @@ public class TransactionStatusVerificationService {
             CashoutService cashoutService,
             PayoutService payoutService,
             EmeraldCallbackService callbackService) {
-        this.jdbc = jdbc;
-        this.mapper = mapper;
-        this.deskService = deskService;
-        this.adminService = adminService;
-        this.cashoutService = cashoutService;
-        this.payoutService = payoutService;
-        this.callbackService = callbackService;
+        this(jdbc, mapper, deskService, adminService, cashoutService, payoutService, callbackService,
+                null, null, null, null);
     }
 
     @Transactional
@@ -102,6 +133,141 @@ public class TransactionStatusVerificationService {
         out.put("callbacks", matchingCallbacks);
         out.put("message", buildSummaryMessage(currentState, changed));
         return out;
+    }
+
+    /**
+     * Allows an Admin to manually finalize a stuck {@code HOLD} / {@code PENDING} / {@code INITIATED}
+     * transaction when the upstream banking switch is unresponsive:
+     * <ul>
+     *   <li>{@code CONFIRM} ({@code SUCCESS}): finalizes wallet deduction (releases hold or debits if not yet debited)</li>
+     *   <li>{@code REVERSE} ({@code REVERSED}): releases hold and credits funds back to the retailer's wallet</li>
+     * </ul>
+     */
+    @Transactional
+    public Map<String, Object> adminResolve(
+            AuthPrincipal adminUser,
+            UUID txnId,
+            String actionRaw,
+            String partnerRefRaw,
+            String reasonRaw) {
+        String normAction = actionRaw == null ? "" : actionRaw.trim().toUpperCase(Locale.ROOT);
+        boolean confirm;
+        if ("CONFIRM".equals(normAction) || "SUCCESS".equals(normAction)) {
+            confirm = true;
+        } else if ("REVERSE".equals(normAction) || "REVERSED".equals(normAction)
+                || "REFUND".equals(normAction) || "FAILED".equals(normAction)) {
+            confirm = false;
+        } else {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_RESOLUTION_ACTION",
+                    "Action must be CONFIRM (mark confirmed & deduct wallet) or REVERSE (refund back to wallet).");
+        }
+
+        List<Map<String, Object>> lockedRows = jdbc.queryForList("""
+                SELECT id, txn_type::text AS txn_type, state::text AS state,
+                       agent_user_id, wallet_id, amount, fee, partner_ref
+                  FROM transactions
+                 WHERE id = ?
+                 FOR UPDATE
+                """, txnId);
+        if (lockedRows.isEmpty()) {
+            throw ApiException.of(HttpStatus.NOT_FOUND, "TRANSACTION_NOT_FOUND", "Transaction not found");
+        }
+        Map<String, Object> row = lockedRows.get(0);
+        String previousState = str(row.get("state"));
+        String txnType = str(row.get("txn_type"));
+        if (!NON_TERMINAL_STATES.contains(previousState)) {
+            throw ApiException.of(HttpStatus.CONFLICT, "TRANSACTION_ALREADY_TERMINAL",
+                    "Transaction is already in terminal state: " + previousState);
+        }
+
+        String cleanRef = (partnerRefRaw == null || partnerRefRaw.isBlank()) ? null : partnerRefRaw.trim();
+        String defaultReason = confirm
+                ? "Manually confirmed by Admin"
+                : "Manually reversed to wallet by Admin (upstream API unresponsive)";
+        String cleanReason = (reasonRaw == null || reasonRaw.isBlank()) ? defaultReason : reasonRaw.trim();
+
+        boolean handledByRail = false;
+        if ("PAYOUT".equalsIgnoreCase(txnType)) {
+            handledByRail = payoutService.adminResolveByTransactionId(
+                    txnId, confirm ? "SUCCESS" : "REVERSED", cleanRef, cleanReason);
+        } else if ("DMT".equalsIgnoreCase(txnType) && dmtCasaLedger != null) {
+            handledByRail = dmtCasaLedger.adminResolveByTransactionId(txnId, confirm, cleanRef, cleanReason);
+        }
+
+        if (!handledByRail) {
+            applyGenericAdminResolution(row, previousState, txnType, confirm, cleanRef, cleanReason);
+        }
+
+        UUID actorId = adminUser != null ? adminUser.userId() : null;
+        log.info("ADMIN_TXN_RESOLVE txnId={} type={} from={} action={} by={} ref={} reason={}",
+                txnId, txnType, previousState, confirm ? "CONFIRM" : "REVERSE", actorId, cleanRef, cleanReason);
+
+        Map<String, Object> after = adminService.getTransaction(txnId);
+        String currentState = str(after.get("state"));
+        List<String> refs = collectSearchRefs(txnId, str(after.get("partner_ref")));
+        List<Map<String, Object>> matchingCallbacks = findMatchingCallbacks(refs);
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("transaction", after);
+        out.put("previousState", previousState);
+        out.put("currentState", currentState);
+        out.put("changed", !previousState.equals(currentState));
+        out.put("verifiedAt", Instant.now());
+        out.put("callbacks", matchingCallbacks);
+        out.put("message", confirm
+                ? "Transaction marked as SUCCESS and wallet deduction finalized."
+                : "Transaction reversed and funds refunded back to retailer wallet.");
+        return out;
+    }
+
+    private void applyGenericAdminResolution(
+            Map<String, Object> row,
+            String previousState,
+            String txnType,
+            boolean confirm,
+            String cleanRef,
+            String cleanReason) {
+        UUID txnId = (UUID) row.get("id");
+        UUID walletId = (UUID) row.get("wallet_id");
+        BigDecimal amount = (BigDecimal) row.get("amount");
+        BigDecimal fee = row.get("fee") instanceof BigDecimal f ? f : BigDecimal.ZERO;
+        BigDecimal total = amount.add(fee);
+
+        BigDecimal netDebited = jdbc.queryForObject("""
+                SELECT COALESCE(SUM(CASE WHEN direction = 'DEBIT' THEN amount ELSE -amount END), 0)
+                  FROM ledger_entries
+                 WHERE transaction_id = ? AND wallet_id = ?
+                """, BigDecimal.class, txnId, walletId);
+        if (netDebited == null) {
+            netDebited = BigDecimal.ZERO;
+        }
+
+        WalletService.WalletInfo wallet = walletService.lockByWalletId(walletId);
+        if (confirm) {
+            if ("HOLD".equals(previousState)) {
+                BigDecimal holdToRelease = wallet.hold().min(total);
+                walletService.adjustCache(walletId, BigDecimal.ZERO, holdToRelease.negate());
+            } else if (netDebited.signum() <= 0) {
+                if (wallet.available().compareTo(total) < 0) {
+                    throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INSUFFICIENT_WALLET_BALANCE",
+                            "Retailer available wallet balance (₹" + wallet.available()
+                                    + ") is less than required deduction (₹" + total + ").");
+                }
+                ledgerService.post(txnId, walletId, "DEBIT", total, txnType + " confirmed by Admin");
+                walletService.adjustCache(walletId, total.negate(), BigDecimal.ZERO);
+            }
+            transactionService.transition(txnId, "SUCCESS", cleanRef, null);
+        } else {
+            BigDecimal refundAmount = netDebited.signum() > 0 ? netDebited : ("HOLD".equals(previousState) ? total : BigDecimal.ZERO);
+            BigDecimal holdToRelease = "HOLD".equals(previousState) ? wallet.hold().min(total) : BigDecimal.ZERO;
+            if (refundAmount.signum() > 0) {
+                ledgerService.post(txnId, walletId, "CREDIT", refundAmount, "Admin reversal: " + cleanReason);
+            }
+            if (refundAmount.signum() > 0 || holdToRelease.signum() > 0) {
+                walletService.adjustCache(walletId, refundAmount, holdToRelease.negate());
+            }
+            transactionService.transition(txnId, "REVERSED", cleanRef, cleanReason);
+        }
     }
 
     private void reconcileTransaction(UUID txnId, String txnType, String currentState) {
