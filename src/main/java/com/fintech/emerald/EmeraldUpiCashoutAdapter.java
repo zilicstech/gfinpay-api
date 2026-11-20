@@ -45,7 +45,8 @@ public class EmeraldUpiCashoutAdapter implements UpiCashoutPort {
             String providerTxnId,
             String externalRef,
             String latitude,
-            String longitude) {
+            String longitude,
+            String txnDate) {
         EmeraldClient.UatmStatusResponse res = client.checkUatmQrStatus(
                 channel.outletCode(), providerTxnId, externalRef, latitude, longitude);
         return new ProviderModels.StatusResult(

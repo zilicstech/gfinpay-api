@@ -13,5 +13,6 @@ public interface UpiCashoutPort {
             String providerTxnId,
             String externalRef,
             String latitude,
-            String longitude);
+            String longitude,
+            String txnDate);
 }

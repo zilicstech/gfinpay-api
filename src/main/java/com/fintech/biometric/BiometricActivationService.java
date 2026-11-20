@@ -87,6 +87,7 @@ public class BiometricActivationService {
 
         List<Map<String, Object>> activations = jdbc.queryForList("""
                 SELECT a.id, c.channel_key, c.supports_upi_cashout, c.supports_aeps, c.supports_payout,
+                       c.biometric_required,
                        a.onboarding_status, a.kyc_status, a.biometric_verified_at, a.bank_sync_status,
                        a.enabled_for_retailer, c.active AS platform_active, c.priority_order
                   FROM provider_pipe_activations a
@@ -113,41 +114,46 @@ public class BiometricActivationService {
             String key = str(row.get("channel_key"));
             String kycStatus = str(row.get("kyc_status"));
             String bankSync = str(row.get("bank_sync_status"));
+            boolean biometricNeeded = Boolean.TRUE.equals(row.get("biometric_required"));
             boolean isFull = "FULL_KYC".equalsIgnoreCase(kycStatus);
+            boolean readyWithoutBiometric = !biometricNeeded && "NOT_REQUIRED".equalsIgnoreCase(kycStatus);
             if (isFull) {
                 anyFullKyc = true;
+            }
+            if (isFull || readyWithoutBiometric) {
                 if (Boolean.TRUE.equals(row.get("supports_upi_cashout"))) upiCashoutActive = true;
-                if (Boolean.TRUE.equals(row.get("supports_aeps"))) aepsActive = true;
-                if (Boolean.TRUE.equals(row.get("supports_payout")) && "SYNCED".equalsIgnoreCase(bankSync)) {
+                if (isFull && Boolean.TRUE.equals(row.get("supports_aeps"))) aepsActive = true;
+                if (isFull && Boolean.TRUE.equals(row.get("supports_payout")) && "SYNCED".equalsIgnoreCase(bankSync)) {
                     payoutBankReady = true;
                 }
-            } else {
+            } else if (biometricNeeded) {
                 anyPendingBiometric = true;
                 if (defaultPendingChannelKey == null) {
                     defaultPendingChannelKey = key;
                 }
             }
 
+            boolean channelReady = isFull || readyWithoutBiometric;
             Map<String, Object> ch = new LinkedHashMap<>();
             ch.put("channelKey", key);
             ch.put("terminalLabel", activations.size() == 1 ? "Merchant Banking Terminal" : "Banking Terminal #" + index);
-            ch.put("biometricVerified", isFull);
-            ch.put("status", isFull ? "ACTIVE" : "BIOMETRIC_REQUIRED");
+            ch.put("biometricVerified", channelReady);
+            ch.put("status", channelReady ? "ACTIVE" : "BIOMETRIC_REQUIRED");
             ch.put("biometricVerifiedAt", row.get("biometric_verified_at"));
             ch.put("bankReady", "SYNCED".equalsIgnoreCase(bankSync));
             opaqueChannels.add(ch);
             index++;
         }
 
-        boolean cashServicesActive = servicesUnlocked && anyFullKyc;
+        boolean cashServicesActive = servicesUnlocked && (anyFullKyc || upiCashoutActive);
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("servicesUnlocked", servicesUnlocked);
         out.put("businessVerified", businessVerified);
         out.put("agreementSigned", agreementSigned);
         out.put("terminalProvisioned", terminalProvisioned);
-        out.put("biometricRequired", terminalProvisioned && !anyFullKyc && anyPendingBiometric);
-        out.put("additionalBiometricAvailable", anyFullKyc && anyPendingBiometric);
+        out.put("biometricRequired", terminalProvisioned && anyPendingBiometric && !upiCashoutActive && !aepsActive);
+        out.put("additionalBiometricAvailable", (anyFullKyc || upiCashoutActive) && anyPendingBiometric);
         out.put("biometricVerified", anyFullKyc);
         out.put("cashServicesActive", cashServicesActive);
         out.put("upiCashoutActive", servicesUnlocked && upiCashoutActive);
@@ -396,7 +402,10 @@ public class BiometricActivationService {
                 SELECT a.kyc_status, a.bank_sync_status, a.last_synced_at
                   FROM provider_pipe_activations a
                   JOIN service_provider_channels c ON c.id = a.channel_id
-                 WHERE a.user_id = ? AND a.enabled_for_retailer = TRUE AND c.active = TRUE
+                 WHERE a.user_id = ?
+                   AND a.enabled_for_retailer = TRUE
+                   AND c.active = TRUE
+                   AND c.provider_code = 'EMERALD'
                 """, userId);
         if (rows.isEmpty()) {
             return false;

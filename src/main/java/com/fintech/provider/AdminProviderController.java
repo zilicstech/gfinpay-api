@@ -1,6 +1,7 @@
 package com.fintech.provider;
 
 import com.fintech.emerald.EmeraldAuditLogService;
+import com.fintech.iserveu.IserveuAuditLogService;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiResponse;
 import java.nio.charset.StandardCharsets;
@@ -50,7 +51,16 @@ public class AdminProviderController {
 
     public record UpdateRetailerChannelRequest(
             Boolean enabledForRetailer,
-            Boolean reopenBiometric
+            Boolean reopenBiometric,
+            Integer retailerPriority
+    ) {}
+
+    public record IserveuOnboardRequest(
+            String accountNumber,
+            String payeeVpa,
+            String retailerCode,
+            String pipeCode,
+            String pastedLine
     ) {}
 
     public record SyncBankRequest(
@@ -64,21 +74,24 @@ public class AdminProviderController {
     private final ProviderOnboardingService onboarding;
     private final ServiceProviderRouter router;
     private final EmeraldAuditLogService emeraldAuditLogs;
+    private final IserveuAuditLogService iserveuAuditLogs;
 
     public AdminProviderController(
             ProviderOnboardingService onboarding,
             ServiceProviderRouter router) {
-        this(onboarding, router, null);
+        this(onboarding, router, null, null);
     }
 
     @Autowired
     public AdminProviderController(
             ProviderOnboardingService onboarding,
             ServiceProviderRouter router,
-            EmeraldAuditLogService emeraldAuditLogs) {
+            EmeraldAuditLogService emeraldAuditLogs,
+            IserveuAuditLogService iserveuAuditLogs) {
         this.onboarding = onboarding;
         this.router = router;
         this.emeraldAuditLogs = emeraldAuditLogs;
+        this.iserveuAuditLogs = iserveuAuditLogs;
     }
 
     @GetMapping("/providers")
@@ -189,7 +202,29 @@ public class AdminProviderController {
             @PathVariable UUID channelId,
             @RequestBody UpdateRetailerChannelRequest body) {
         return ApiResponse.ok(onboarding.updateRetailerChannel(
-                me, id, channelId, body.enabledForRetailer(), body.reopenBiometric()));
+                me, id, channelId, body.enabledForRetailer(), body.reopenBiometric(), body.retailerPriority()));
+    }
+
+    @PutMapping("/users/{id}/providers/priorities")
+    @PreAuthorize("hasAuthority('users.onboard')")
+    public ApiResponse<Map<String, Object>> setProviderPriorities(
+            @AuthenticationPrincipal AuthPrincipal me,
+            @PathVariable UUID id,
+            @RequestBody List<ProviderOnboardingService.ProviderPriority> body) {
+        return ApiResponse.ok(onboarding.setProviderPriorities(me, id, body));
+    }
+
+    @PostMapping("/users/{id}/providers/iserveu/onboard")
+    @PreAuthorize("hasAuthority('users.onboard')")
+    public ApiResponse<Map<String, Object>> onboardIserveu(
+            @AuthenticationPrincipal AuthPrincipal me,
+            @PathVariable UUID id,
+            @RequestBody IserveuOnboardRequest body) {
+        IserveuOnboardRequest req = body == null
+                ? new IserveuOnboardRequest(null, null, null, null, null)
+                : body;
+        return ApiResponse.ok(onboarding.recordIserveuOnboarding(
+                me, id, req.accountNumber(), req.payeeVpa(), req.retailerCode(), req.pastedLine()));
     }
 
     @GetMapping("/providers/emerald/logs")
@@ -215,6 +250,17 @@ public class AdminProviderController {
             return ApiResponse.ok(List.of());
         }
         return ApiResponse.ok(emeraldAuditLogs.listForUser(id, limit));
+    }
+
+    @GetMapping("/users/{id}/providers/iserveu/logs")
+    @PreAuthorize("hasAnyAuthority('settings.manage','users.onboard','finance.review')")
+    public ApiResponse<List<Map<String, Object>>> listUserIserveuLogs(
+            @PathVariable UUID id,
+            @RequestParam(defaultValue = "40") int limit) {
+        if (iserveuAuditLogs == null) {
+            return ApiResponse.ok(List.of());
+        }
+        return ApiResponse.ok(iserveuAuditLogs.listForUser(id, limit));
     }
 
     @GetMapping("/users/{id}/providers/export-csv")

@@ -47,7 +47,8 @@ public class EmeraldPayoutAdapter implements PayoutPort {
     public ProviderModels.PayoutStatus checkStatus(
             ServiceProviderRouter.RoutedChannel channel,
             String externalRef,
-            String providerTxnId) {
+            String providerTxnId,
+            String txnDate) {
         EmeraldClient.GenericApiResponse res = client.checkPayoutStatus(channel.outletCode(), externalRef, providerTxnId);
         Map<String, Object> data = res.data() == null ? Map.of() : res.data();
         String raw = first(str(data.get("status")), res.statusCode());

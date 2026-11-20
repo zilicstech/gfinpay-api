@@ -11,5 +11,6 @@ public interface PayoutPort {
     ProviderModels.PayoutStatus checkStatus(
             ServiceProviderRouter.RoutedChannel channel,
             String externalRef,
-            String providerTxnId);
+            String providerTxnId,
+            String txnDate);
 }

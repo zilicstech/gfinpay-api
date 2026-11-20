@@ -2,6 +2,7 @@ package com.fintech.provider;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fintech.iserveu.IserveuOnboardingLine;
 import com.fintech.emerald.EmeraldClient;
 import com.fintech.emerald.EmeraldProperties;
 import com.fintech.emerald.EmeraldTraceContext;
@@ -33,6 +34,9 @@ public class ProviderOnboardingService {
 
     private static final Logger log = LoggerFactory.getLogger(ProviderOnboardingService.class);
     public static final String PROVIDER_EMERALD = "EMERALD";
+    public static final String PROVIDER_ISERVEU = "ISERVEU";
+
+    public record ProviderPriority(String providerCode, Integer priority) {}
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -242,8 +246,108 @@ public class ProviderOnboardingService {
         if (PROVIDER_EMERALD.equals(providerCode)) {
             return onboardToEmerald(admin, userId, aadhaarOverride, emailOverride, requestedPipe);
         }
+        if (PROVIDER_ISERVEU.equals(providerCode)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "ISERVEU_DETAILS_REQUIRED",
+                    "Enter the iServeU account number and VPA shared for this retailer.");
+        }
         throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "UNSUPPORTED_PROVIDER",
                 "Automated API onboarding is not yet configured for provider: " + providerCode);
+    }
+
+    @Transactional
+    public Map<String, Object> recordIserveuOnboarding(
+            AuthPrincipal admin,
+            UUID userId,
+            String accountNumberRaw,
+            String payeeVpaRaw,
+            String retailerCodeRaw,
+            String pastedLine) {
+        access.assertNetworkUser(userId);
+        IserveuOnboardingLine parsed = IserveuOnboardingLine.parse(pastedLine);
+        String account = digits(firstFilled(accountNumberRaw, parsed == null ? "" : parsed.accountNumber()));
+        String vpa = firstFilled(payeeVpaRaw, parsed == null ? "" : parsed.vpa()).trim();
+        String retailerCode = firstFilled(retailerCodeRaw, parsed == null ? "" : parsed.retailerCode());
+        if (!account.matches("[0-9]{6,30}")) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "ISERVEU_ACCOUNT_REQUIRED",
+                    "Enter the iServeU account number from the onboarding line.");
+        }
+        if (!vpa.contains("@")) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "ISERVEU_VPA_REQUIRED",
+                    "Enter this retailer's iServeU VPA.");
+        }
+        if (!retailerCode.isBlank()) {
+            String actual = jdbc.queryForObject("SELECT code FROM users WHERE id = ?", String.class, userId);
+            if (actual == null || !actual.equalsIgnoreCase(retailerCode.trim())) {
+                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "RETAILER_CODE_MISMATCH",
+                        "The retailer code in the iServeU line does not match this retailer.");
+            }
+        }
+        List<UUID> channels = jdbc.queryForList("""
+                SELECT id FROM service_provider_channels WHERE provider_code = ? ORDER BY pipe_code
+                """, UUID.class, PROVIDER_ISERVEU);
+        if (channels.isEmpty()) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "CHANNEL_NOT_FOUND",
+                    "iServeU channel is not available.");
+        }
+        UUID merchantId = upsertMerchantAccount(userId, PROVIDER_ISERVEU, "ISERVEU", account, "ACTIVE", admin.userId(), Map.of(
+                "accountNumber", account,
+                "payeeVpa", vpa));
+        for (UUID channelId : channels) {
+            jdbc.update("""
+                    INSERT INTO provider_pipe_activations
+                        (id, user_id, channel_id, merchant_account_id, pipe_outlet_code, payee_vpa,
+                         onboarding_status, kyc_status, enabled_for_retailer, last_synced_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'ONBOARDED', 'NOT_REQUIRED', FALSE, now())
+                    ON CONFLICT (user_id, channel_id) DO UPDATE
+                       SET merchant_account_id = EXCLUDED.merchant_account_id,
+                           pipe_outlet_code = EXCLUDED.pipe_outlet_code,
+                           payee_vpa = CASE WHEN EXCLUDED.payee_vpa <> '' THEN EXCLUDED.payee_vpa ELSE provider_pipe_activations.payee_vpa END,
+                           onboarding_status = 'ONBOARDED',
+                           kyc_status = 'NOT_REQUIRED',
+                           last_error = NULL,
+                           last_synced_at = now(),
+                           updated_at = now()
+                    """, UUID.randomUUID(), userId, channelId, merchantId, account, vpa);
+        }
+        log.info("ISERVEU recorded user={} channels={} byAdmin={}", userId, channels.size(), admin.userId());
+        return buildAdminView(userId);
+    }
+
+    @Transactional
+    public Map<String, Object> setProviderPriorities(AuthPrincipal admin, UUID userId, List<ProviderPriority> priorities) {
+        access.assertNetworkUser(userId);
+        if (priorities == null || priorities.isEmpty()) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "PRIORITY_REQUIRED",
+                    "Choose a priority for each provider.");
+        }
+        java.util.Set<Integer> used = new java.util.HashSet<>();
+        java.util.Set<String> providers = new java.util.HashSet<>();
+        for (ProviderPriority item : priorities) {
+            String code = normalizeProviderCode(item.providerCode());
+            int priority = item.priority() == null ? 0 : item.priority();
+            if (priority < 1 || priority > 3) {
+                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_PRIORITY",
+                        "Priority must be 1, 2, or 3.");
+            }
+            if (!providers.add(code) || !used.add(priority)) {
+                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "PRIORITY_TAKEN",
+                        "Two providers cannot use the same priority.");
+            }
+            int updated = jdbc.update("""
+                    UPDATE provider_pipe_activations a
+                       SET retailer_priority = ?, updated_at = now()
+                      FROM service_provider_channels c
+                     WHERE a.channel_id = c.id
+                       AND a.user_id = ?
+                       AND c.provider_code = ?
+                    """, priority, userId, code);
+            if (updated == 0) {
+                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "NOT_ONBOARDED",
+                        "Onboard " + code + " before setting its priority.");
+            }
+        }
+        log.info("ADMIN set provider priorities user={} count={} by={}", userId, priorities.size(), admin.userId());
+        return buildAdminView(userId);
     }
 
     @Transactional
@@ -419,22 +523,31 @@ public class ProviderOnboardingService {
             UUID userId,
             UUID channelId,
             Boolean enabledForRetailer,
-            Boolean reopenBiometric) {
+            Boolean reopenBiometric,
+            Integer retailerPriority) {
         access.assertNetworkUser(userId);
-        int count = jdbc.queryForObject(
-                "SELECT COUNT(*)::int FROM provider_pipe_activations WHERE user_id = ? AND channel_id = ?",
-                Integer.class, userId, channelId);
-        if (count == 0) {
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT enabled_for_retailer, retailer_priority
+                  FROM provider_pipe_activations
+                 WHERE user_id = ? AND channel_id = ?
+                """, userId, channelId);
+        if (rows.isEmpty()) {
             throw ApiException.of(HttpStatus.NOT_FOUND, "ACTIVATION_NOT_FOUND",
                     "Retailer is not onboarded on this provider channel yet.");
         }
-        if (enabledForRetailer != null) {
-            jdbc.update("""
-                    UPDATE provider_pipe_activations
-                       SET enabled_for_retailer = ?, updated_at = now()
-                     WHERE user_id = ? AND channel_id = ?
-                    """, enabledForRetailer, userId, channelId);
-        }
+        boolean currentEnabled = Boolean.TRUE.equals(rows.get(0).get("enabled_for_retailer"));
+        Integer currentPriority = rows.get(0).get("retailer_priority") instanceof Number n ? n.intValue() : null;
+        boolean nextEnabled = enabledForRetailer != null ? enabledForRetailer : currentEnabled;
+        Integer nextPriority = retailerPriority != null ? retailerPriority : currentPriority;
+        boolean conflict = nextEnabled && nextPriority != null && priorityTaken(userId, channelId, nextPriority);
+        requireRetailerPriority(nextPriority, nextEnabled, conflict);
+        jdbc.update("""
+                UPDATE provider_pipe_activations
+                   SET enabled_for_retailer = ?,
+                       retailer_priority = ?,
+                       updated_at = now()
+                 WHERE user_id = ? AND channel_id = ?
+                """, nextEnabled, nextPriority, userId, channelId);
         if (Boolean.TRUE.equals(reopenBiometric)) {
             jdbc.update("""
                     UPDATE provider_pipe_activations
@@ -541,7 +654,8 @@ public class ProviderOnboardingService {
                        c.active AS platform_channel_active,
                        m.outlet_code, a.pipe_outlet_code, a.onboarding_status, a.kyc_status,
                        a.biometric_verified_at, a.bank_sync_status, a.synced_bank_account_id,
-                       a.bank_sync_remarks, a.enabled_for_retailer, a.last_error, a.last_synced_at, a.updated_at
+                       a.bank_sync_remarks, a.enabled_for_retailer, a.retailer_priority, a.payee_vpa,
+                       a.last_error, a.last_synced_at, a.updated_at
                   FROM provider_pipe_activations a
                   JOIN service_provider_channels c ON c.id = a.channel_id
                   JOIN provider_merchant_accounts m ON m.id = a.merchant_account_id
@@ -573,6 +687,8 @@ public class ProviderOnboardingService {
                        a.synced_bank_account_id,
                        a.bank_sync_remarks,
                        COALESCE(a.enabled_for_retailer, FALSE) AS enabled_for_retailer,
+                       a.retailer_priority,
+                       a.payee_vpa,
                        a.last_error,
                        a.last_synced_at
                   FROM service_provider_channels c
@@ -604,6 +720,51 @@ public class ProviderOnboardingService {
         out.put("activations", activations);
         out.put("biometricSessions", biometricSessions);
         return out;
+    }
+
+    static void requireRetailerPriority(Integer priority, boolean enabling, boolean conflict) {
+        if (priority != null && (priority < 1 || priority > 3)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_PRIORITY",
+                    "Priority must be 1, 2, or 3.");
+        }
+        if (enabling && priority == null) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "PRIORITY_REQUIRED",
+                    "Set a priority from 1 to 3 before enabling this provider.");
+        }
+        if (enabling && conflict) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "PRIORITY_TAKEN",
+                    "Another enabled provider already uses this priority for the same service.");
+        }
+    }
+
+    private boolean priorityTaken(UUID userId, UUID channelId, int priority) {
+        Integer count = jdbc.queryForObject("""
+                SELECT COUNT(*)::int
+                  FROM provider_pipe_activations a
+                  JOIN service_provider_channels c ON c.id = a.channel_id
+                  JOIN service_provider_channels target ON target.id = ?
+                 WHERE a.user_id = ?
+                   AND a.channel_id <> ?
+                   AND a.enabled_for_retailer = TRUE
+                   AND a.retailer_priority = ?
+                   AND (
+                        (target.supports_upi_cashout AND c.supports_upi_cashout)
+                     OR (target.supports_aeps AND c.supports_aeps)
+                     OR (target.supports_payout AND c.supports_payout)
+                   )
+                """, Integer.class, channelId, userId, channelId, priority);
+        return count != null && count > 0;
+    }
+
+    private static String digits(String raw) {
+        return raw == null ? "" : raw.replaceAll("\\D", "");
+    }
+
+    private static String firstFilled(String preferred, String fallback) {
+        if (preferred != null && !preferred.isBlank()) {
+            return preferred.trim();
+        }
+        return fallback == null ? "" : fallback.trim();
     }
 
     private static String normalizeProviderCode(String raw) {

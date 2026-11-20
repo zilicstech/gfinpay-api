@@ -1017,9 +1017,24 @@ public class AdminPlatformService {
         StringBuilder sql = new StringBuilder("""
                 SELECT t.id, t.txn_type::text AS txn_type, t.state::text AS state, t.amount, t.fee,
                        t.partner_ref, t.failure_reason, t.created_at,
-                       u.full_name AS agent_name, u.user_type::text AS agent_type
+                       u.full_name AS agent_name, u.user_type::text AS agent_type,
+                       COALESCE(cs.provider_code, po.provider_code) AS provider_code,
+                       COALESCE(cs.pipe_code, po.pipe_code) AS pipe_code
                   FROM transactions t
                   JOIN users u ON u.id = t.agent_user_id
+                  LEFT JOIN LATERAL (
+                       SELECT provider_code, pipe_code
+                         FROM cashout_sessions
+                        WHERE transaction_id = t.id
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                  ) cs ON TRUE
+                  LEFT JOIN LATERAL (
+                       SELECT provider_code, pipe_code
+                         FROM payout_transfers
+                        WHERE transaction_id = t.id
+                        LIMIT 1
+                  ) po ON TRUE
                  WHERE (t.created_at AT TIME ZONE 'Asia/Kolkata')::date BETWEEN ? AND ?
                 """);
         List<Object> args = new ArrayList<>();
@@ -1044,9 +1059,24 @@ public class AdminPlatformService {
                 SELECT t.id, t.txn_type::text AS txn_type, t.state::text AS state, t.amount, t.fee,
                        t.partner_code, t.partner_ref, t.failure_reason, t.state_history,
                        t.created_at, t.updated_at, t.agent_user_id,
-                       u.full_name AS agent_name
+                       u.full_name AS agent_name,
+                       COALESCE(cs.provider_code, po.provider_code) AS provider_code,
+                       COALESCE(cs.pipe_code, po.pipe_code) AS pipe_code
                   FROM transactions t
                   JOIN users u ON u.id = t.agent_user_id
+                  LEFT JOIN LATERAL (
+                       SELECT provider_code, pipe_code
+                         FROM cashout_sessions
+                        WHERE transaction_id = t.id
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                  ) cs ON TRUE
+                  LEFT JOIN LATERAL (
+                       SELECT provider_code, pipe_code
+                         FROM payout_transfers
+                        WHERE transaction_id = t.id
+                        LIMIT 1
+                  ) po ON TRUE
                  WHERE t.id = ?
                 """, id, "TXN_NOT_FOUND", "Transaction not found");
         UUID agentId = (UUID) row.get("agent_user_id");

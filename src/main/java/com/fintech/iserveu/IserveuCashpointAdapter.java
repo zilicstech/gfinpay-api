@@ -1,18 +1,13 @@
 package com.fintech.iserveu;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fintech.provider.ChannelLimits;
 import com.fintech.provider.ServiceProviderRouter;
 import com.fintech.provider.canonical.ProviderModels;
 import com.fintech.provider.port.UpiCashoutPort;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
-import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,14 +19,14 @@ public class IserveuCashpointAdapter implements UpiCashoutPort {
 
     private static final Logger log = LoggerFactory.getLogger(IserveuCashpointAdapter.class);
 
-    private final IserveuProperties props;
-    private final ObjectMapper mapper;
-    private final HttpClient http;
+    private static final ZoneId INDIA = ZoneId.of("Asia/Kolkata");
 
-    public IserveuCashpointAdapter(IserveuProperties props, ObjectMapper mapper) {
+    private final IserveuProperties props;
+    private final IserveuGateway gateway;
+
+    public IserveuCashpointAdapter(IserveuProperties props, IserveuGateway gateway) {
         this.props = props;
-        this.mapper = mapper;
-        this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
+        this.gateway = gateway;
     }
 
     @Override
@@ -41,33 +36,22 @@ public class IserveuCashpointAdapter implements UpiCashoutPort {
 
     @Override
     public ProviderModels.QrResult generateQr(ServiceProviderRouter.RoutedChannel channel, ProviderModels.QrRequest request) {
-        if (!props.configured()) {
+        if (!props.cashpointReady()) {
+            gateway.noteNotSent("CASHPOINT_QR", "Cash terminal is not configured.", request);
+            return new ProviderModels.QrResult(false, "Cash terminal is not configured.", "", "", "", 90, "");
+        }
+        String payee = channel.payeeVpa() == null ? "" : channel.payeeVpa().trim();
+        if (payee.isBlank()) {
+            gateway.noteNotSent("CASHPOINT_QR", "Cash terminal is not configured.", request);
             return new ProviderModels.QrResult(false, "Cash terminal is not configured.", "", "", "", 90, "");
         }
         try {
-            byte[] key = IserveuCrypto.key(props.encKey());
             String clientRef = request.externalRef().length() > 19
                     ? request.externalRef().substring(0, 19)
                     : request.externalRef();
-            String payee = ChannelLimits.text(channel.configJson(), "payeeVpa", "");
-            Map<String, Object> body = requestBody(request, clientRef, payee);
-            String headerJson = mapper.writeValueAsString(Map.of(
-                    "client_id", props.clientId(),
-                    "client_secret", props.clientSecret(),
-                    "epoch", String.valueOf(Instant.now().getEpochSecond())));
-            String requestData = mapper.writeValueAsString(Map.of("RequestData", IserveuCrypto.encrypt(mapper.writeValueAsString(body), key)));
-            HttpRequest httpRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(props.baseUrl()))
-                    .timeout(Duration.ofSeconds(25))
-                    .header("Content-Type", "application/json")
-                    .header("pass_key", props.passKey())
-                    .header("header_secrets", IserveuCrypto.encrypt(headerJson, key))
-                    .POST(HttpRequest.BodyPublishers.ofString(requestData))
-                    .build();
-            HttpResponse<String> response = http.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-            JsonNode node = readResponse(response.body(), key);
+            JsonNode node = gateway.post(props.cashpointUrl(), requestBody(request, clientRef, payee));
             ProviderModels.QrResult result = interpret(node);
-            log.info("ISERVEU_QR status={} http={} clientRef={}", result.success() ? "OK" : "FAILED", response.statusCode(), clientRef);
+            log.info("ISERVEU_QR status={} clientRef={}", result.success() ? "OK" : "FAILED", clientRef);
             return result;
         } catch (Exception e) {
             log.warn("ISERVEU_QR call failed: {}", e.getMessage());
@@ -81,8 +65,50 @@ public class IserveuCashpointAdapter implements UpiCashoutPort {
             String providerTxnId,
             String externalRef,
             String latitude,
-            String longitude) {
-        return new ProviderModels.StatusResult("PENDING", "", "Awaiting bank callback", providerTxnId, "", "", "");
+            String longitude,
+            String txnDate) {
+        if (!props.cashpointStatusReady() || externalRef == null || externalRef.isBlank()) {
+            return new ProviderModels.StatusResult("PENDING", "", "Awaiting bank callback", providerTxnId, "", "", "");
+        }
+        String day = txnDate == null || txnDate.isBlank() ? LocalDate.now(INDIA).toString() : txnDate.trim();
+        try {
+            JsonNode node = gateway.post(props.cashpointStatusUrl(), Map.of(
+                    "productCode", "UPI",
+                    "txnDate", day,
+                    "clientRefId", externalRef.length() > 19 ? externalRef.substring(0, 19) : externalRef));
+            return interpretStatus(node, providerTxnId);
+        } catch (Exception e) {
+            log.warn("ISERVEU_QR status call failed: {}", e.getMessage());
+            return new ProviderModels.StatusResult("PENDING", "", "Awaiting bank callback", providerTxnId, "", "", "");
+        }
+    }
+
+    public static ProviderModels.StatusResult interpretStatus(JsonNode node, String fallbackTxnId) {
+        if (node == null || node.isMissingNode()) {
+            return new ProviderModels.StatusResult("PENDING", "", "Awaiting bank callback", fallbackTxnId, "", "", "");
+        }
+        int length = node.path("length").asInt(-1);
+        String message = text(node, "message");
+        JsonNode results = node.path("results");
+        if (!results.isArray() || results.isEmpty() || length == 0 || message.toLowerCase(Locale.ROOT).contains("no transaction")) {
+            return new ProviderModels.StatusResult("PENDING", "", message.isBlank() ? "Awaiting bank callback" : message, fallbackTxnId, "", "", "");
+        }
+        JsonNode row = results.get(0);
+        String status = text(row, "status").toUpperCase(Locale.ROOT);
+        String mapped = switch (status) {
+            case "SUCCESS" -> "SUCCESS";
+            case "FAILED" -> "FAILED";
+            default -> "PENDING";
+        };
+        String txnId = firstText(text(row, "txnId"), fallbackTxnId);
+        return new ProviderModels.StatusResult(
+                mapped,
+                status,
+                firstText(text(row, "statusDesc"), message),
+                txnId,
+                text(row, "rrn"),
+                firstText(text(row, "payerVPA"), text(row, "payer_vpa")),
+                text(row, "userName"));
     }
 
     static ProviderModels.QrResult interpret(JsonNode node) {
@@ -141,16 +167,13 @@ public class IserveuCashpointAdapter implements UpiCashoutPort {
         return body;
     }
 
-    private JsonNode readResponse(String raw, byte[] key) throws Exception {
-        if (raw == null || raw.isBlank()) {
-            return mapper.createObjectNode();
+    private static String firstText(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
         }
-        JsonNode root = mapper.readTree(raw);
-        String encrypted = root.path("ResponseData").asText("");
-        if (!encrypted.isBlank()) {
-            return mapper.readTree(IserveuCrypto.decrypt(encrypted, key));
-        }
-        return root;
+        return "";
     }
 
     private static String text(JsonNode node, String field) {

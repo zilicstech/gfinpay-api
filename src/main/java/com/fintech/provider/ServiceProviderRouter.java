@@ -15,9 +15,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Multi-provider channel router.
- * {@code ROUND_ROBIN} advances only after {@link #noteSuccessfulSelection(String)}.
- * {@code PRIMARY_FALLBACK} always picks the lowest {@code priority_order}. It does not
- * try the next channel after a provider error, because money may already be held.
+ * UPI cash-out and payout use the retailer's own priority (1, then 2, then 3).
+ * AePS still uses the platform strategy. {@code ROUND_ROBIN} advances only after
+ * {@link #noteSuccessfulSelection(String)}. A failed provider call does not try the
+ * next channel, because money or a QR may already exist.
  */
 @Service
 public class ServiceProviderRouter {
@@ -38,7 +39,8 @@ public class ServiceProviderRouter {
             String pipeOutletCode,
             String kycStatus,
             String bankSyncStatus,
-            String configJson
+            String configJson,
+            String payeeVpa
     ) {}
 
     private final JdbcTemplate jdbc;
@@ -48,7 +50,9 @@ public class ServiceProviderRouter {
     }
 
     /**
-     * Selects the next eligible {@code FULL_KYC} channel for the retailer and service.
+     * Selects the retailer's enabled channel for the service. UPI and payout use
+     * {@code retailer_priority}. Emerald still needs full KYC. A channel that does not
+     * require biometrics is eligible at {@code NOT_REQUIRED}.
      */
     @Transactional
     public RoutedChannel selectChannel(UUID userId, String serviceCode) {
@@ -71,11 +75,12 @@ public class ServiceProviderRouter {
                        c.channel_key,
                        c.provider_code,
                        c.pipe_code,
-                       c.priority_order,
+                       a.retailer_priority,
                        m.outlet_code,
                        a.pipe_outlet_code,
                        a.kyc_status,
                        a.bank_sync_status,
+                       a.payee_vpa,
                        c.config_json::text AS config_json
                   FROM provider_pipe_activations a
                   JOIN service_provider_channels c ON c.id = a.channel_id
@@ -83,11 +88,15 @@ public class ServiceProviderRouter {
                  WHERE a.user_id = ?
                    AND a.enabled_for_retailer = TRUE
                    AND a.onboarding_status IN ('ONBOARDED', 'ACTIVE')
-                   AND a.kyc_status = 'FULL_KYC'
+                   AND a.retailer_priority BETWEEN 1 AND 3
+                   AND (
+                        a.kyc_status = 'FULL_KYC'
+                        OR (c.biometric_required = FALSE AND a.kyc_status = 'NOT_REQUIRED')
+                   )
                    AND c.active = TRUE
                    AND m.status = 'ACTIVE'
                    AND """ + " " + serviceColumn + " = TRUE " + """
-                 ORDER BY c.priority_order ASC, c.created_at ASC
+                 ORDER BY a.retailer_priority ASC, c.created_at ASC
                 """, userId);
 
         if (candidates.isEmpty()) {
@@ -99,6 +108,7 @@ public class ServiceProviderRouter {
                      WHERE a.user_id = ?
                        AND a.enabled_for_retailer = TRUE
                        AND c.active = TRUE
+                       AND c.biometric_required = TRUE
                        AND a.kyc_status <> 'FULL_KYC'
                     """, Integer.class, userId);
             if (pendingBiometric != null && pendingBiometric > 0) {
@@ -110,15 +120,24 @@ public class ServiceProviderRouter {
         }
 
         String strategy = String.valueOf(policy.getOrDefault("strategy", "ROUND_ROBIN")).toUpperCase(Locale.ROOT);
-        Map<String, Object> chosen;
-        if ("ROUND_ROBIN".equals(strategy) && candidates.size() > 1) {
-            long counter = policy.get("rr_counter") instanceof Number n ? n.longValue() : 0L;
-            chosen = candidates.get((int) Math.floorMod(counter, candidates.size()));
-        } else {
-            chosen = candidates.get(0);
-        }
+        long counter = policy.get("rr_counter") instanceof Number n ? n.longValue() : 0L;
+        return toRoutedChannel(choose(svc, candidates, strategy, counter));
+    }
 
-        return toRoutedChannel(chosen);
+    /** UPI and payout always take the first row, which is the lowest retailer priority. */
+    static Map<String, Object> choose(String service, List<Map<String, Object>> orderedByPriority, String strategy, long counter) {
+        boolean retailerOrder = UPI_CASHOUT.equals(service) || PAYOUT.equals(service);
+        if (!retailerOrder && "ROUND_ROBIN".equals(strategy) && orderedByPriority.size() > 1) {
+            return orderedByPriority.get((int) Math.floorMod(counter, orderedByPriority.size()));
+        }
+        return orderedByPriority.get(0);
+    }
+
+    static boolean kycEligible(boolean biometricRequired, String kycStatus) {
+        if ("FULL_KYC".equals(kycStatus)) {
+            return true;
+        }
+        return !biometricRequired && "NOT_REQUIRED".equals(kycStatus);
     }
 
     /** Advances round-robin only after the provider call itself succeeded. */
@@ -143,6 +162,7 @@ public class ServiceProviderRouter {
                        a.pipe_outlet_code,
                        a.kyc_status,
                        a.bank_sync_status,
+                       a.payee_vpa,
                        c.config_json::text AS config_json
                   FROM provider_pipe_activations a
                   JOIN service_provider_channels c ON c.id = a.channel_id
@@ -238,7 +258,8 @@ public class ServiceProviderRouter {
                 str(row.get("pipe_outlet_code")),
                 str(row.get("kyc_status")),
                 str(row.get("bank_sync_status")),
-                jsonText(row.get("config_json")));
+                jsonText(row.get("config_json")),
+                str(row.get("payee_vpa")));
     }
 
     private static String jsonText(Object value) {

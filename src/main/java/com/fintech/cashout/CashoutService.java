@@ -25,6 +25,7 @@ import java.math.RoundingMode;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -385,8 +386,8 @@ public class CashoutService {
         UUID agentId = (UUID) row.get("agent_user_id");
         try (var ignored = EmeraldTraceContext.open(agentId, "STEP6_UPI_STATUS", externalRef)) {
             ServiceProviderRouter.RoutedChannel channel = new ServiceProviderRouter.RoutedChannel(
-                    null, "", providerCode, str(row.get("pipe_code")), outletCode, "", "", "", "{}");
-            return providers.upi(providerCode).checkStatus(channel, providerTxnId, externalRef, lat, lng);
+                    null, "", providerCode, str(row.get("pipe_code")), outletCode, "", "", "", "{}", "");
+            return providers.upi(providerCode).checkStatus(channel, providerTxnId, externalRef, lat, lng, txnDay(row.get("created_at")));
         } catch (Exception ex) {
             log.warn("UPI_CASHOUT status poll warning session={}: {}", row.get("id"), ex.getMessage());
             return null;
@@ -683,6 +684,13 @@ public class CashoutService {
     private static String firstNonBlank(String... vals) {
         for (String v : vals) {
             if (v != null && !v.isBlank()) return v.trim();
+        }
+        return "";
+    }
+
+    private static String txnDay(Object createdAt) {
+        if (createdAt instanceof Timestamp ts) {
+            return ts.toInstant().atZone(ZoneId.of("Asia/Kolkata")).toLocalDate().toString();
         }
         return "";
     }

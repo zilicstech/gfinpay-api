@@ -58,6 +58,7 @@ public class IserveuCallbackAdapter implements ProviderCallbackPort {
             case "FAILED", "DECLINED" -> "FAILED";
             case "EXPIRED" -> "EXPIRED";
             case "REVERSED" -> "REVERSED";
+            case "INPROGRESS", "IN_PROGRESS" -> "PENDING";
             default -> code == -1 ? "FAILED" : "PENDING";
         };
         String ref = first(text(node, "clientRefId"), text(node, "clientRef"), text(node, "externalRef"));

@@ -57,7 +57,12 @@ public final class ProviderModels {
             String externalRef,
             String latitude,
             String longitude,
-            String remarks
+            String remarks,
+            String customerName,
+            String customerMobile,
+            String pincode,
+            String bankName,
+            String clientIp
     ) {}
 
     public record PayoutResult(

@@ -28,16 +28,19 @@ public class WebhookController {
     private final ObjectMapper mapper;
     private final InboundCallbackOrchestrator inbound;
     private final com.fintech.iserveu.IserveuProperties iserveu;
+    private final com.fintech.iserveu.IserveuAuditLogService iserveuAudit;
 
     public WebhookController(WebhookService webhookService, WebhookSigner signer, ProviderCallbackLog callbacks,
                              ObjectMapper mapper, InboundCallbackOrchestrator inbound,
-                             com.fintech.iserveu.IserveuProperties iserveu) {
+                             com.fintech.iserveu.IserveuProperties iserveu,
+                             com.fintech.iserveu.IserveuAuditLogService iserveuAudit) {
         this.webhookService = webhookService;
         this.signer = signer;
         this.callbacks = callbacks;
         this.mapper = mapper;
         this.inbound = inbound;
         this.iserveu = iserveu;
+        this.iserveuAudit = iserveuAudit;
     }
 
     @PostMapping("/iserveu/upi-cashpoint")
@@ -45,19 +48,54 @@ public class WebhookController {
             @RequestHeader(value = "pass_key", required = false) String passKey,
             @RequestHeader(value = "header_secrets", required = false) String headerSecrets,
             @RequestBody(required = false) String rawBody) {
+        return acceptIserveuWebhook("/webhooks/iserveu/upi-cashpoint", passKey, headerSecrets, rawBody, true);
+    }
+
+    @PostMapping("/iserveu/payout")
+    public ResponseEntity<Map<String, Object>> iserveuPayout(
+            @RequestHeader(value = "pass_key", required = false) String passKey,
+            @RequestHeader(value = "header_secrets", required = false) String headerSecrets,
+            @RequestBody(required = false) String rawBody) {
+        return acceptIserveuWebhook("/webhooks/iserveu/payout", passKey, headerSecrets, rawBody, false);
+    }
+
+    private ResponseEntity<Map<String, Object>> acceptIserveuWebhook(
+            String path, String passKey, String headerSecrets, String rawBody, boolean cashpoint) {
+        long started = System.currentTimeMillis();
         int bytes = rawBody == null ? 0 : rawBody.length();
-        log.info("ISERVEU_CASHPOINT_WEBHOOK passKeyPresent={} headerSecretsPresent={} bytes={}",
-                passKey != null && !passKey.isBlank(),
-                headerSecrets != null && !headerSecrets.isBlank(),
-                bytes);
-        if (!inbound.iserveuAuthorized(passKey) || !headerSecretsMatch(headerSecrets)) {
-            return ResponseEntity.ok(Map.of("status", 1, "statusDesc", "Failure"));
+        boolean passAccepted = inbound.iserveuAuthorized(passKey);
+        boolean headerAccepted = headerSecretsMatch(headerSecrets);
+        String outcome = "REJECTED";
+        String error = null;
+        String ack = "{\"status\":1,\"statusDesc\":\"Failure\"}";
+        Map<String, Object> body = Map.of("status", 1, "statusDesc", "Failure");
+        try {
+            log.info("ISERVEU_WEBHOOK path={} passAccepted={} headerAccepted={} bytes={}",
+                    path, passAccepted, headerAccepted, bytes);
+            if (!passAccepted || !headerAccepted) {
+                error = "pass_key or header_secrets rejected";
+                return ResponseEntity.ok(body);
+            }
+            if (bytes > WebhookInbox.MAX_BODY_BYTES) {
+                error = "body_too_large";
+                return ResponseEntity.ok(body);
+            }
+            if (cashpoint) {
+                inbound.acceptIserveu(rawBody);
+            } else {
+                inbound.acceptIserveuPayout(rawBody);
+            }
+            outcome = "RECEIVED";
+            error = null;
+            ack = "{\"status\":0,\"statusDesc\":\"success\"}";
+            return ResponseEntity.ok(Map.of("status", 0, "statusDesc", "success"));
+        } finally {
+            if (iserveuAudit != null) {
+                iserveuAudit.recordInbound(
+                        path, rawBody, passAccepted, headerAccepted, 200, ack, outcome, error,
+                        System.currentTimeMillis() - started);
+            }
         }
-        if (bytes > WebhookInbox.MAX_BODY_BYTES) {
-            return ResponseEntity.ok(Map.of("status", 1, "statusDesc", "Failure"));
-        }
-        inbound.acceptIserveu(rawBody);
-        return ResponseEntity.ok(Map.of("status", 0, "statusDesc", "success"));
     }
 
     private boolean headerSecretsMatch(String provided) {

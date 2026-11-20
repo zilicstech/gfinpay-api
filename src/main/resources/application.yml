@@ -122,7 +122,11 @@ app:
     mask-account-numbers: ${APP_EMERALD_MASK_ACCOUNT_NUMBERS:true}
   iserveu:
     enabled: ${APP_ISERVEU_ENABLED:false}
-    base-url: ${APP_ISERVEU_BASE_URL:https://api-onprem.iserveu.online/commonAdmin/api/upi/initiate-dynamic-transaction/v2}
+    cashpoint-url: ${APP_ISERVEU_CASHPOINT_URL:${APP_ISERVEU_BASE_URL:}}
+    cashpoint-status-url: ${APP_ISERVEU_CASHPOINT_STATUS_URL:}
+    payout-url: ${APP_ISERVEU_PAYOUT_URL:}
+    payout-status-url: ${APP_ISERVEU_PAYOUT_STATUS_URL:}
+    payout-status-op: ${APP_ISERVEU_PAYOUT_STATUS_OP:Cashout_addbank_status}
     client-id: ${APP_ISERVEU_CLIENT_ID:}
     client-secret: ${APP_ISERVEU_CLIENT_SECRET:}
     pass-key: ${APP_ISERVEU_PASS_KEY:}

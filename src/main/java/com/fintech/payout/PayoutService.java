@@ -20,6 +20,8 @@ import com.fintech.provider.ServiceProviderRouter;
 import com.fintech.provider.canonical.ProviderModels;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.sql.Timestamp;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -31,9 +33,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
  * Settlement Payout service ({@code POST /payout/v1/pay}) enforcing:
@@ -119,7 +124,7 @@ public class PayoutService {
                 && "SIGNED".equalsIgnoreCase(str(kycRows.get(0).get("agreement_status")));
 
         List<Map<String, Object>> channelRows = jdbc.queryForList("""
-                SELECT a.kyc_status, a.bank_sync_status, a.synced_bank_account_id
+                SELECT a.kyc_status, a.bank_sync_status, a.synced_bank_account_id, c.biometric_required
                   FROM provider_pipe_activations a
                   JOIN service_provider_channels c ON c.id = a.channel_id
                   JOIN provider_merchant_accounts m ON m.id = a.merchant_account_id
@@ -131,11 +136,9 @@ public class PayoutService {
                  ORDER BY c.priority_order ASC
                 """, userId);
 
-        boolean biometricVerified = channelRows.stream()
-                .anyMatch(r -> "FULL_KYC".equalsIgnoreCase(str(r.get("kyc_status"))));
-        boolean bankSynced = channelRows.stream()
-                .anyMatch(r -> "FULL_KYC".equalsIgnoreCase(str(r.get("kyc_status")))
-                        && "SYNCED".equalsIgnoreCase(str(r.get("bank_sync_status"))));
+        boolean biometricVerified = channelRows.stream().anyMatch(PayoutService::payoutChannelReady);
+        boolean bankSynced = channelRows.stream().anyMatch(r ->
+                payoutChannelReady(r) && (!requiresBankSwitchSync(r) || "SYNCED".equalsIgnoreCase(str(r.get("bank_sync_status")))));
 
         Map<String, Object> bankRow = loadPrimarySettlementBank(userId);
 
@@ -262,10 +265,16 @@ public class PayoutService {
 
         ProviderDispatch.RoutedPayout route = dispatch.payout(userId);
         ServiceProviderRouter.RoutedChannel channel = route.channel();
-        if (!"SYNCED".equalsIgnoreCase(channel.bankSyncStatus())) {
+        boolean iserveu = "ISERVEU".equalsIgnoreCase(channel.providerCode());
+        if (!iserveu && !"SYNCED".equalsIgnoreCase(channel.bankSyncStatus())) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "BANK_NOT_SYNCED",
                     "Your settlement bank account is pending banking switch verification.");
         }
+        if (iserveu && !"IMPS".equals(mode) && !"NEFT".equals(mode)) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_TRANSFER_MODE",
+                    "iServeU settlement supports IMPS and NEFT.");
+        }
+        SettlementCustomer customer = iserveu ? loadSettlementCustomer(userId, bank) : SettlementCustomer.empty();
 
         BigDecimal fee = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
         BigDecimal totalDebit = amount.add(fee);
@@ -278,7 +287,9 @@ public class PayoutService {
             }
             return readReplay(claim.responseBody());
         }
-        String externalRef = ExternalRefs.fromKey("PO", claim.keyId());
+        String externalRef = "ISERVEU".equalsIgnoreCase(channel.providerCode())
+                ? ExternalRefs.payoutClientRef(claim.keyId())
+                : ExternalRefs.fromKey("PO", claim.keyId());
         var port = route.port();
 
         HeldPayout hold = shortTx.required(() -> placeHold(
@@ -295,7 +306,12 @@ public class PayoutService {
                     externalRef,
                     lat.toPlainString(),
                     lng.toPlainString(),
-                    cleanRemarks));
+                    cleanRemarks,
+                    customer.name(),
+                    customer.mobile(),
+                    customer.pincode(),
+                    customer.bankName(),
+                    customer.clientIp()));
         } catch (RuntimeException ex) {
             log.warn("PAYOUT provider call inconclusive id={} ref={}: {}", hold.payoutId(), externalRef, ex.getMessage());
             payRes = new ProviderModels.PayoutResult(ProviderModels.Outcome.PENDING, "TIMEOUT",
@@ -512,8 +528,9 @@ public class PayoutService {
         try (var ignored = EmeraldTraceContext.open((UUID) row.get("user_id"), "STEP6_PAYOUT_STATUS", externalRef)) {
             ServiceProviderRouter.RoutedChannel channel = new ServiceProviderRouter.RoutedChannel(
                     (UUID) row.get("channel_id"), "", providerCode, str(row.get("pipe_code")),
-                    outletCode, "", "", "", "{}");
-            return providers.payout(providerCode).checkStatus(channel, externalRef, providerTxnId);
+                    outletCode, "", "", "", "{}", "");
+            return providers.payout(providerCode).checkStatus(
+                    channel, externalRef, providerTxnId, txnDay(row.get("created_at")));
         } catch (Exception ex) {
             log.warn("PAYOUT status poll warning id={}: {}", row.get("id"), ex.getMessage());
             return null;
@@ -669,6 +686,87 @@ public class PayoutService {
         return count == null ? 0 : count;
     }
 
+    private static boolean payoutChannelReady(Map<String, Object> row) {
+        String kyc = str(row.get("kyc_status"));
+        if ("FULL_KYC".equalsIgnoreCase(kyc)) {
+            return true;
+        }
+        return !requiresBankSwitchSync(row) && "NOT_REQUIRED".equalsIgnoreCase(kyc);
+    }
+
+    private static boolean requiresBankSwitchSync(Map<String, Object> row) {
+        Object flag = row.get("biometric_required");
+        if (flag instanceof Boolean biometric) {
+            return biometric;
+        }
+        return !"false".equalsIgnoreCase(str(flag));
+    }
+
+    private record SettlementCustomer(String name, String mobile, String pincode, String bankName, String clientIp) {
+        static SettlementCustomer empty() {
+            return new SettlementCustomer("", "", "", "", "");
+        }
+    }
+
+    private SettlementCustomer loadSettlementCustomer(UUID userId, Map<String, Object> bank) {
+        Map<String, Object> profile = jdbc.queryForMap("""
+                SELECT u.full_name, u.mobile,
+                       COALESCE(k.shop_address->>'pincode',
+                                k.personal_details->'permanentAddress'->>'pincode',
+                                k.personal_details->>'pincode') AS pincode
+                  FROM users u
+                  LEFT JOIN agent_kyc_profiles k ON k.user_id = u.id
+                 WHERE u.id = ?
+                """, userId);
+        String mobile = digits(str(profile.get("mobile")));
+        if (mobile.length() > 10) {
+            mobile = mobile.substring(mobile.length() - 10);
+        }
+        String pincode = digits(str(profile.get("pincode")));
+        String bankName = str(bank.get("bank_name")).trim();
+        String name = firstFilled(str(profile.get("full_name")), str(bank.get("account_name"))).trim();
+        String ip = clientIp();
+        if (!mobile.matches("[6-9][0-9]{9}") || !pincode.matches("[1-9][0-9]{5}") || bankName.isBlank() || name.isBlank() || ip.isBlank()) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "PAYOUT_PROFILE_INCOMPLETE",
+                    "Settlement needs the retailer mobile, shop pincode, bank name, and a client IP.");
+        }
+        return new SettlementCustomer(clip(name, 25), mobile, pincode, clip(bankName, 50), ip);
+    }
+
+    private static String clientIp() {
+        if (!(RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attrs)) {
+            return "";
+        }
+        HttpServletRequest request = attrs.getRequest();
+        String forwarded = request.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            return forwarded.split(",")[0].trim();
+        }
+        String real = request.getHeader("X-Real-IP");
+        if (real != null && !real.isBlank()) {
+            return real.trim();
+        }
+        return request.getRemoteAddr() == null ? "" : request.getRemoteAddr().trim();
+    }
+
+    private static String digits(String value) {
+        return value == null ? "" : value.replaceAll("\\D", "");
+    }
+
+    private static String firstFilled(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    private static String clip(String value, int max) {
+        String clean = value == null ? "" : value.trim();
+        return clean.length() <= max ? clean : clean.substring(0, max);
+    }
+
     private Map<String, Object> loadPrimarySettlementBank(UUID userId) {
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 SELECT id, account_name, account_number, ifsc, bank_name, branch_name,
@@ -780,6 +878,13 @@ public class PayoutService {
     private static String firstNonBlank(String... vals) {
         for (String v : vals) {
             if (v != null && !v.isBlank()) return v.trim();
+        }
+        return "";
+    }
+
+    private static String txnDay(Object createdAt) {
+        if (createdAt instanceof Timestamp ts) {
+            return ts.toInstant().atZone(ZoneId.of("Asia/Kolkata")).toLocalDate().toString();
         }
         return "";
     }
