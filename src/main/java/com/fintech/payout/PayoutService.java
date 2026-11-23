@@ -136,11 +136,16 @@ public class PayoutService {
                  ORDER BY c.priority_order ASC
                 """, userId);
 
+        Map<String, Object> bankRow = loadPrimarySettlementBank(userId);
+        UUID primaryBankId = bankRow != null ? (UUID) bankRow.get("id") : null;
+
         boolean biometricVerified = channelRows.stream().anyMatch(PayoutService::payoutChannelReady);
         boolean bankSynced = channelRows.stream().anyMatch(r ->
-                payoutChannelReady(r) && (!requiresBankSwitchSync(r) || "SYNCED".equalsIgnoreCase(str(r.get("bank_sync_status")))));
-
-        Map<String, Object> bankRow = loadPrimarySettlementBank(userId);
+                payoutChannelReady(r)
+                        && (!requiresBankSwitchSync(r)
+                        || ("SYNCED".equalsIgnoreCase(str(r.get("bank_sync_status")))
+                        && (r.get("synced_bank_account_id") == null
+                        || r.get("synced_bank_account_id").equals(primaryBankId)))));
 
         int totalCompletedCashouts = countCompletedCashouts(userId, false);
         int recent7dCashouts = countCompletedCashouts(userId, true);
@@ -266,7 +271,10 @@ public class PayoutService {
         ProviderDispatch.RoutedPayout route = dispatch.payout(userId);
         ServiceProviderRouter.RoutedChannel channel = route.channel();
         boolean iserveu = "ISERVEU".equalsIgnoreCase(channel.providerCode());
-        if (!iserveu && !"SYNCED".equalsIgnoreCase(channel.bankSyncStatus())) {
+        UUID bankId = (UUID) bank.get("id");
+        boolean sameBankSynced = "SYNCED".equalsIgnoreCase(channel.bankSyncStatus())
+                && (channel.syncedBankAccountId() == null || channel.syncedBankAccountId().equals(bankId));
+        if (!iserveu && !sameBankSynced) {
             throw ApiException.of(HttpStatus.FORBIDDEN, "BANK_NOT_SYNCED",
                     "Your settlement bank account is pending banking switch verification.");
         }
@@ -326,10 +334,9 @@ public class PayoutService {
         }
 
         ProviderModels.PayoutResult outcome = payRes;
+        AppliedPayoutOutcome applied;
         try {
-            Map<String, Object> view = shortTx.required(() -> applyPayoutOutcome(hold, outcome));
-            completeIdempotency(claim.keyId(), 200, view);
-            return view;
+            applied = shortTx.required(() -> applyPayoutOutcome(hold, outcome));
         } catch (ApiException ex) {
             try {
                 idempotency.complete(claim.keyId(), ex.getStatus().value(), ex.getMessage());
@@ -338,7 +345,21 @@ public class PayoutService {
             }
             throw ex;
         }
+        if (applied.declineReason() != null) {
+            ApiException declined = ApiException.of(
+                    HttpStatus.UNPROCESSABLE_ENTITY, "PAYOUT_DECLINED", applied.declineReason());
+            try {
+                idempotency.complete(claim.keyId(), declined.getStatus().value(), declined.getMessage());
+            } catch (Exception ignored) {
+                log.warn("PAYOUT idempotency complete failed key={}", claim.keyId());
+            }
+            throw declined;
+        }
+        completeIdempotency(claim.keyId(), 200, applied.view());
+        return applied.view();
     }
+
+    private record AppliedPayoutOutcome(Map<String, Object> view, String declineReason) {}
 
     private record HeldPayout(
             UUID payoutId,
@@ -372,7 +393,7 @@ public class PayoutService {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INSUFFICIENT_BALANCE",
                     "Insufficient wallet balance for this payout.");
         }
-        String accHolder = str(bank.get("account_name"));
+        String accHolder = firstFilled(str(bank.get("verified_name")), str(bank.get("account_name")));
         String accNumber = str(bank.get("account_number"));
         String maskedAcc = maskAccount(accNumber);
         String ifsc = str(bank.get("ifsc"));
@@ -408,7 +429,7 @@ public class PayoutService {
         return new HeldPayout(payoutId, txnId, wallet.walletId(), totalDebit, amount, externalRef, accHolder, accNumber, ifsc);
     }
 
-    private Map<String, Object> applyPayoutOutcome(HeldPayout hold, ProviderModels.PayoutResult payRes) {
+    private AppliedPayoutOutcome applyPayoutOutcome(HeldPayout hold, ProviderModels.PayoutResult payRes) {
         UUID payoutId = hold.payoutId();
         UUID txnId = hold.txnId();
         if (payRes.outcome() == ProviderModels.Outcome.SUCCESS) {
@@ -452,9 +473,9 @@ public class PayoutService {
                      WHERE id = ?
                     """, blankToNull(payRes.txnId()), payRes.statusCode(), cleanReason, payoutId);
             log.warn("PAYOUT declined & reversed id={} txnId={} code={}", payoutId, txnId, payRes.statusCode());
-            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "PAYOUT_DECLINED", cleanReason);
+            return new AppliedPayoutOutcome(null, cleanReason);
         }
-        return view(loadById(payoutId));
+        return new AppliedPayoutOutcome(view(loadById(payoutId)), null);
     }
 
     private Map<String, Object> readReplay(String body) {
@@ -522,7 +543,7 @@ public class PayoutService {
         String outletCode = str(row.get("outlet_code"));
         String externalRef = str(row.get("external_ref"));
         String providerTxnId = str(row.get("provider_txn_id"));
-        if (providerCode.isBlank() || outletCode.isBlank()) {
+        if (providerCode.isBlank() || (outletCode.isBlank() && !"ISERVEU".equalsIgnoreCase(providerCode) && !"INSTANTPAY".equalsIgnoreCase(providerCode))) {
             return null;
         }
         try (var ignored = EmeraldTraceContext.open((UUID) row.get("user_id"), "STEP6_PAYOUT_STATUS", externalRef)) {
@@ -769,7 +790,7 @@ public class PayoutService {
 
     private Map<String, Object> loadPrimarySettlementBank(UUID userId) {
         List<Map<String, Object>> rows = jdbc.queryForList("""
-                SELECT id, account_name, account_number, ifsc, bank_name, branch_name,
+                SELECT id, account_name, verified_name, account_number, ifsc, bank_name, branch_name,
                        COALESCE(account_type, 'SAVINGS') AS account_type,
                        COALESCE(ifsc_details, '{}'::jsonb)::text AS ifsc_details_json,
                        verification_status

@@ -110,6 +110,7 @@ app:
     base-url: ${APP_KBILL_BASE_URL:}
     api-token: ${APP_KBILL_API_TOKEN:}
   emerald:
+    enabled: ${APP_EMERALD_ENABLED:true}
     base-url: ${APP_EMERALD_BASE_URL:https://myemerald.in}
     client-id: ${APP_EMERALD_CLIENT_ID:}
     client-secret: ${APP_EMERALD_CLIENT_SECRET:}
@@ -120,6 +121,21 @@ app:
     payout-status-path: ${APP_EMERALD_PAYOUT_STATUS_PATH:}
     log-payloads: ${APP_EMERALD_LOG_PAYLOADS:false}
     mask-account-numbers: ${APP_EMERALD_MASK_ACCOUNT_NUMBERS:true}
+  instantpay:
+    enabled: ${APP_INSTANTPAY_ENABLED:false}
+    base-url: ${APP_INSTANTPAY_BASE_URL:https://api.instantpay.in}
+    auth-code: ${APP_INSTANTPAY_AUTH_CODE:1}
+    client-id: ${APP_INSTANTPAY_CLIENT_ID:}
+    client-secret: ${APP_INSTANTPAY_CLIENT_SECRET:}
+    encryption-key: ${APP_INSTANTPAY_ENCRYPTION_KEY:}
+    endpoint-ip: ${APP_INSTANTPAY_ENDPOINT_IP:}
+    default-spkey: ${APP_INSTANTPAY_DEFAULT_SPKEY:WAP}
+    default-gw: ${APP_INSTANTPAY_DEFAULT_GW:JA}
+    payer-bank-profile-id: ${APP_INSTANTPAY_PAYER_BANK_PROFILE_ID:0}
+    payer-account-number: ${APP_INSTANTPAY_PAYER_ACCOUNT_NUMBER:9650043494}
+    payout-purpose: ${APP_INSTANTPAY_PAYOUT_PURPOSE:REIMBURSEMENT}
+    payout-include-outlet-id: ${APP_INSTANTPAY_PAYOUT_INCLUDE_OUTLET_ID:true}
+    webhook-secret: ${APP_INSTANTPAY_WEBHOOK_SECRET:}
   iserveu:
     enabled: ${APP_ISERVEU_ENABLED:false}
     cashpoint-url: ${APP_ISERVEU_CASHPOINT_URL:${APP_ISERVEU_BASE_URL:}}

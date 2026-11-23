@@ -24,6 +24,11 @@ public class RetailerBiometricController {
 
     public record BiometricInitiateRequest(String aadhaarNumber) {}
 
+    public record BiometricVerifyOtpRequest(
+            UUID sessionId,
+            String otp
+    ) {}
+
     public record BiometricSubmitRequest(
             UUID sessionId,
             String pidXml,
@@ -71,6 +76,19 @@ public class RetailerBiometricController {
             @RequestBody(required = false) BiometricInitiateRequest body) {
         String aadhaar = body == null ? null : body.aadhaarNumber();
         return ApiResponse.ok(biometric.initiateBiometric(me, channelKey, aadhaar));
+    }
+
+    @PostMapping("/biometric/{channelKey}/verify-otp")
+    @PreAuthorize("isAuthenticated()")
+    public ApiResponse<Map<String, Object>> verifyOtp(
+            @AuthenticationPrincipal AuthPrincipal me,
+            @PathVariable String channelKey,
+            @RequestBody BiometricVerifyOtpRequest body) {
+        return ApiResponse.ok(biometric.verifyRegistrationOtp(
+                me,
+                channelKey,
+                body.sessionId(),
+                body.otp()));
     }
 
     @PostMapping("/biometric/{channelKey}/submit")

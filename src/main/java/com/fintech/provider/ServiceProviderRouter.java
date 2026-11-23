@@ -1,5 +1,6 @@
 package com.fintech.provider;
 
+import com.fintech.emerald.EmeraldProperties;
 import com.fintech.platform.web.ApiException;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -7,6 +8,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -40,13 +42,40 @@ public class ServiceProviderRouter {
             String kycStatus,
             String bankSyncStatus,
             String configJson,
-            String payeeVpa
-    ) {}
+            String payeeVpa,
+            UUID syncedBankAccountId
+    ) {
+        public RoutedChannel(
+                UUID channelId,
+                String channelKey,
+                String providerCode,
+                String pipeCode,
+                String outletCode,
+                String pipeOutletCode,
+                String kycStatus,
+                String bankSyncStatus,
+                String configJson,
+                String payeeVpa) {
+            this(channelId, channelKey, providerCode, pipeCode, outletCode, pipeOutletCode,
+                    kycStatus, bankSyncStatus, configJson, payeeVpa, null);
+        }
+    }
 
     private final JdbcTemplate jdbc;
+    private final EmeraldProperties emeraldProps;
 
     public ServiceProviderRouter(JdbcTemplate jdbc) {
+        this(jdbc, null);
+    }
+
+    @Autowired
+    public ServiceProviderRouter(JdbcTemplate jdbc, EmeraldProperties emeraldProps) {
         this.jdbc = jdbc;
+        this.emeraldProps = emeraldProps;
+    }
+
+    private boolean isEmeraldEnabled() {
+        return emeraldProps == null || emeraldProps.enabled();
     }
 
     /**
@@ -70,6 +99,8 @@ public class ServiceProviderRouter {
             default -> throw new IllegalArgumentException("Unsupported service: " + svc);
         };
 
+        String emeraldFilter = isEmeraldEnabled() ? "" : " AND c.provider_code <> 'EMERALD' ";
+
         List<Map<String, Object>> candidates = jdbc.queryForList("""
                 SELECT c.id AS channel_id,
                        c.channel_key,
@@ -80,6 +111,7 @@ public class ServiceProviderRouter {
                        a.pipe_outlet_code,
                        a.kyc_status,
                        a.bank_sync_status,
+                       a.synced_bank_account_id,
                        a.payee_vpa,
                        c.config_json::text AS config_json
                   FROM provider_pipe_activations a
@@ -95,6 +127,7 @@ public class ServiceProviderRouter {
                    )
                    AND c.active = TRUE
                    AND m.status = 'ACTIVE'
+                   """ + emeraldFilter + """
                    AND """ + " " + serviceColumn + " = TRUE " + """
                  ORDER BY a.retailer_priority ASC, c.created_at ASC
                 """, userId);
@@ -162,6 +195,7 @@ public class ServiceProviderRouter {
                        a.pipe_outlet_code,
                        a.kyc_status,
                        a.bank_sync_status,
+                       a.synced_bank_account_id,
                        a.payee_vpa,
                        c.config_json::text AS config_json
                   FROM provider_pipe_activations a
@@ -177,6 +211,7 @@ public class ServiceProviderRouter {
     }
 
     public Map<String, Object> listPlatformConfiguration() {
+        String whereClause = isEmeraldEnabled() ? "" : " WHERE c.provider_code <> 'EMERALD' ";
         List<Map<String, Object>> channels = jdbc.queryForList("""
                 SELECT c.id, c.channel_key, c.provider_code, c.pipe_code, c.display_label,
                        c.supports_upi_cashout, c.supports_aeps, c.supports_payout,
@@ -184,6 +219,7 @@ public class ServiceProviderRouter {
                        (SELECT COUNT(*)::int FROM provider_pipe_activations a WHERE a.channel_id = c.id) AS onboarded_count,
                        (SELECT COUNT(*)::int FROM provider_pipe_activations a WHERE a.channel_id = c.id AND a.kyc_status = 'FULL_KYC') AS full_kyc_count
                   FROM service_provider_channels c
+                """ + whereClause + """
                  ORDER BY c.priority_order ASC, c.created_at ASC
                 """);
         List<Map<String, Object>> policies = jdbc.queryForList("""
@@ -259,7 +295,8 @@ public class ServiceProviderRouter {
                 str(row.get("kyc_status")),
                 str(row.get("bank_sync_status")),
                 jsonText(row.get("config_json")),
-                str(row.get("payee_vpa")));
+                str(row.get("payee_vpa")),
+                (UUID) row.get("synced_bank_account_id"));
     }
 
     private static String jsonText(Object value) {

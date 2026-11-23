@@ -718,22 +718,22 @@ class EmeraldMultiProviderFlowTest {
 
         jdbc.update("""
                 INSERT INTO provider_pipe_activations
-                    (id, user_id, channel_id, merchant_account_id, pipe_outlet_code, onboarding_status, kyc_status, bank_sync_status, enabled_for_retailer)
-                VALUES (?, ?, ?, ?, 'P1', 'ONBOARDED', 'FULL_KYC', 'SYNCED', TRUE),
-                       (?, ?, ?, ?, 'P2', 'ONBOARDED', 'FULL_KYC', 'SYNCED', TRUE)
+                    (id, user_id, channel_id, merchant_account_id, pipe_outlet_code, onboarding_status, kyc_status, bank_sync_status, enabled_for_retailer, retailer_priority)
+                VALUES (?, ?, ?, ?, 'P1', 'ONBOARDED', 'FULL_KYC', 'SYNCED', TRUE, 1),
+                       (?, ?, ?, ?, 'P2', 'ONBOARDED', 'FULL_KYC', 'SYNCED', TRUE, 2)
                 """, UUID.randomUUID(), userId, ch1, m1, UUID.randomUUID(), userId, ch2, m2);
 
-        // 1. ROUND_ROBIN alternates cleanly across active FULL_KYC channels
-        router.updatePolicy("UPI_CASHOUT", "ROUND_ROBIN", true);
-        ServiceProviderRouter.RoutedChannel r1 = router.selectChannel(userId, "UPI_CASHOUT");
-        router.noteSuccessfulSelection("UPI_CASHOUT");
-        ServiceProviderRouter.RoutedChannel r2 = router.selectChannel(userId, "UPI_CASHOUT");
-        router.noteSuccessfulSelection("UPI_CASHOUT");
-        ServiceProviderRouter.RoutedChannel r3 = router.selectChannel(userId, "UPI_CASHOUT");
+        // 1. AEPS ROUND_ROBIN alternates cleanly across active FULL_KYC channels
+        router.updatePolicy("AEPS", "ROUND_ROBIN", true);
+        ServiceProviderRouter.RoutedChannel r1 = router.selectChannel(userId, "AEPS");
+        router.noteSuccessfulSelection("AEPS");
+        ServiceProviderRouter.RoutedChannel r2 = router.selectChannel(userId, "AEPS");
+        router.noteSuccessfulSelection("AEPS");
+        ServiceProviderRouter.RoutedChannel r3 = router.selectChannel(userId, "AEPS");
         assertFalse(r1.channelId().equals(r2.channelId()), "Round-robin must alternate between the two active channels");
         assertEquals(r1.channelId(), r3.channelId(), "3rd call wraps back to 1st channel");
 
-        // 2. PRIMARY_FALLBACK always picks lowest priority_order (EMERALD/INSTANTPAY = 10) unless paused
+        // 2. UPI_CASHOUT always picks lowest retailer_priority (EMERALD = 1) unless paused, then fails over to priority 2
         router.updatePolicy("UPI_CASHOUT", "PRIMARY_FALLBACK", true);
         assertEquals("EMERALD", router.selectChannel(userId, "UPI_CASHOUT").providerCode());
         assertEquals("EMERALD", router.selectChannel(userId, "UPI_CASHOUT").providerCode());

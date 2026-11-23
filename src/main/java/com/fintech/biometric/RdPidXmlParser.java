@@ -83,6 +83,40 @@ public final class RdPidXmlParser {
             m.put("nmPoints", nmPoints);
             return m;
         }
+
+        /**
+         * Builds the exact 25 mandatory string parameters required by InstantPay's
+         * {@code POST /user/outlet/signup/biometricKyc} specification (AES-256-CBC encrypted Aadhaar, omits {@code sessionId}).
+         */
+        public Map<String, String> toInstantPayBiometricData(String aesEncryptedAadhaar) {
+            Map<String, String> m = new LinkedHashMap<>();
+            m.put("encryptedAadhaar", aesEncryptedAadhaar);
+            m.put("dc", dc);
+            m.put("ci", ci);
+            m.put("hmac", hmac);
+            m.put("dpId", dpId);
+            m.put("mc", mc);
+            m.put("pidDataType", pidDataType);
+            m.put("rdsId", rdsId);
+            m.put("sessionKey", sessionKey);
+            m.put("mi", mi);
+            m.put("errCode", errCode);
+            m.put("errInfo", errInfo);
+            m.put("fCount", fCount);
+            m.put("fType", fType);
+            m.put("iCount", iCount);
+            m.put("iType", iType);
+            m.put("pCount", pCount);
+            m.put("pType", pType);
+            m.put("srno", srno);
+            m.put("sysid", sysid);
+            m.put("ts", ts);
+            m.put("pidData", pidData);
+            m.put("qScore", qScore);
+            m.put("nmPoints", nmPoints);
+            m.put("rdsVer", rdsVer);
+            return m;
+        }
     }
 
     private RdPidXmlParser() {}

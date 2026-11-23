@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class EmeraldProperties {
 
+    private final boolean enabled;
     private final String baseUrl;
     private final String clientId;
     private final String clientSecret;
@@ -23,6 +24,7 @@ public class EmeraldProperties {
 
     @Autowired
     public EmeraldProperties(
+            @Value("${app.emerald.enabled:true}") boolean enabled,
             @Value("${app.emerald.base-url:https://myemerald.in}") String baseUrl,
             @Value("${app.emerald.client-id:}") String clientId,
             @Value("${app.emerald.client-secret:}") String clientSecret,
@@ -33,6 +35,7 @@ public class EmeraldProperties {
             @Value("${app.emerald.payout-status-path:}") String payoutStatusPath,
             @Value("${app.emerald.log-payloads:true}") boolean logPayloads,
             @Value("${app.emerald.mask-account-numbers:true}") boolean maskAccountNumbers) {
+        this.enabled = enabled;
         this.baseUrl = trimTrailingSlash(baseUrl == null || baseUrl.isBlank() ? "https://myemerald.in" : baseUrl.trim());
         this.clientId = clientId == null ? "" : clientId.trim();
         this.clientSecret = clientSecret == null ? "" : clientSecret.trim();
@@ -53,8 +56,26 @@ public class EmeraldProperties {
             String defaultPipe,
             String callbackSecret,
             String aepsTransactPath,
+            String payoutStatusPath,
+            boolean logPayloads,
+            boolean maskAccountNumbers) {
+        this(true, baseUrl, clientId, clientSecret, entityCode, defaultPipe, callbackSecret, aepsTransactPath, payoutStatusPath, logPayloads, maskAccountNumbers);
+    }
+
+    public EmeraldProperties(
+            String baseUrl,
+            String clientId,
+            String clientSecret,
+            String entityCode,
+            String defaultPipe,
+            String callbackSecret,
+            String aepsTransactPath,
             String payoutStatusPath) {
-        this(baseUrl, clientId, clientSecret, entityCode, defaultPipe, callbackSecret, aepsTransactPath, payoutStatusPath, true, true);
+        this(true, baseUrl, clientId, clientSecret, entityCode, defaultPipe, callbackSecret, aepsTransactPath, payoutStatusPath, true, true);
+    }
+
+    public boolean enabled() {
+        return enabled;
     }
 
     public String baseUrl() {

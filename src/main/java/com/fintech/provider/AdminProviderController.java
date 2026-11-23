@@ -1,6 +1,7 @@
 package com.fintech.provider;
 
 import com.fintech.emerald.EmeraldAuditLogService;
+import com.fintech.instantpay.InstantPayAuditLogService;
 import com.fintech.iserveu.IserveuAuditLogService;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiResponse;
@@ -75,11 +76,20 @@ public class AdminProviderController {
     private final ServiceProviderRouter router;
     private final EmeraldAuditLogService emeraldAuditLogs;
     private final IserveuAuditLogService iserveuAuditLogs;
+    private final InstantPayAuditLogService instantPayAuditLogs;
 
     public AdminProviderController(
             ProviderOnboardingService onboarding,
             ServiceProviderRouter router) {
-        this(onboarding, router, null, null);
+        this(onboarding, router, null, null, null);
+    }
+
+    public AdminProviderController(
+            ProviderOnboardingService onboarding,
+            ServiceProviderRouter router,
+            EmeraldAuditLogService emeraldAuditLogs,
+            IserveuAuditLogService iserveuAuditLogs) {
+        this(onboarding, router, emeraldAuditLogs, iserveuAuditLogs, null);
     }
 
     @Autowired
@@ -87,11 +97,13 @@ public class AdminProviderController {
             ProviderOnboardingService onboarding,
             ServiceProviderRouter router,
             EmeraldAuditLogService emeraldAuditLogs,
-            IserveuAuditLogService iserveuAuditLogs) {
+            IserveuAuditLogService iserveuAuditLogs,
+            InstantPayAuditLogService instantPayAuditLogs) {
         this.onboarding = onboarding;
         this.router = router;
         this.emeraldAuditLogs = emeraldAuditLogs;
         this.iserveuAuditLogs = iserveuAuditLogs;
+        this.instantPayAuditLogs = instantPayAuditLogs;
     }
 
     @GetMapping("/providers")
@@ -261,6 +273,31 @@ public class AdminProviderController {
             return ApiResponse.ok(List.of());
         }
         return ApiResponse.ok(iserveuAuditLogs.listForUser(id, limit));
+    }
+
+    @GetMapping("/providers/instantpay/logs")
+    @PreAuthorize("hasAnyAuthority('settings.manage','users.onboard','finance.review')")
+    public ApiResponse<List<Map<String, Object>>> listGlobalInstantPayLogs(
+            @RequestParam(required = false) String direction,
+            @RequestParam(required = false) String flow,
+            @RequestParam(required = false) String outletCode,
+            @RequestParam(required = false) String externalRef,
+            @RequestParam(defaultValue = "50") int limit) {
+        if (instantPayAuditLogs == null) {
+            return ApiResponse.ok(List.of());
+        }
+        return ApiResponse.ok(instantPayAuditLogs.listGlobal(direction, flow, outletCode, externalRef, limit));
+    }
+
+    @GetMapping("/users/{id}/providers/instantpay/logs")
+    @PreAuthorize("hasAnyAuthority('settings.manage','users.onboard','finance.review')")
+    public ApiResponse<List<Map<String, Object>>> listUserInstantPayLogs(
+            @PathVariable UUID id,
+            @RequestParam(defaultValue = "40") int limit) {
+        if (instantPayAuditLogs == null) {
+            return ApiResponse.ok(List.of());
+        }
+        return ApiResponse.ok(instantPayAuditLogs.listForUser(id, limit));
     }
 
     @GetMapping("/users/{id}/providers/export-csv")

@@ -79,6 +79,44 @@ public class RetailerOnboardingProfileAssembler {
         }
     }
 
+    /**
+     * Enriched profile for direct InstantPay onboarding ({@code POST /user/outlet/signup/minKyc}),
+     * automatically falling back to the verified Authorized Signatory's Individual PAN ({@code 4th char == 'P'})
+     * when {@code business_type == 'COMPANY'} or when the primary profile PAN is non-individual.
+     */
+    public record InstantPayOnboardingProfile(
+            UUID userId,
+            String bcAgentId,
+            String panName,
+            String individualPan,
+            String individualPanLast4,
+            String panSource,
+            UUID externalSignatoryId,
+            String aadhaar12,
+            String aadhaarLast4,
+            String mobile,
+            String email,
+            String gender,
+            String dateOfBirth,
+            String addressFull,
+            String addressCity,
+            String addressPincode,
+            String latitude,
+            String longitude,
+            String gstin,
+            UUID bankAccountId,
+            String accountHolderName,
+            String accountNumber,
+            String ifsc,
+            String bankName,
+            String bankVerificationStatus,
+            List<String> missingFields
+    ) {
+        public boolean readyForInstantPay() {
+            return missingFields.isEmpty();
+        }
+    }
+
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
     private final FieldCipher fieldCipher;
@@ -314,6 +352,169 @@ public class RetailerOnboardingProfileAssembler {
                 businessVerified,
                 agreementSigned,
                 missing);
+    }
+
+    public InstantPayOnboardingProfile assembleForInstantPay(UUID userId) {
+        RetailerProviderDossier d = assemble(userId);
+        Map<String, Object> kycRow = jdbc.queryForMap("""
+                SELECT p.business_type,
+                       p.identity_details::text AS identity_details,
+                       p.personal_details::text AS personal_details
+                  FROM users u
+                  LEFT JOIN agent_kyc_profiles p ON p.user_id = u.id
+                 WHERE u.id = ?
+                """, userId);
+
+        Map<String, Object> identity = jsonMap(kycRow.get("identity_details"));
+        Map<String, Object> personal = jsonMap(kycRow.get("personal_details"));
+        if (personal.isEmpty()) {
+            personal = identity;
+        }
+
+        String businessType = str(kycRow.get("business_type")).toUpperCase(Locale.ROOT);
+        String resolvedPan = d.pan().toUpperCase(Locale.ROOT);
+        String resolvedPanLast4 = d.panLast4();
+        String panSource = "SELF";
+        UUID externalSignatoryId = null;
+        String panName = firstNonBlank(
+                str(personal.get("panName")),
+                str(identity.get("panName")),
+                d.fullName());
+        String aadhaar12 = d.aadhaar();
+        String aadhaarLast4 = d.aadhaarLast4();
+        String gender = d.gender();
+        String dob = d.dateOfBirth();
+        String addrFull = firstNonBlank(d.homeAddress(), d.shopAddress());
+        String addrCity = firstNonBlank(d.homeCity(), d.shopCity());
+        String addrPincode = firstNonBlank(d.homePincode(), d.shopPincode());
+
+        boolean needsSignatoryPan = "COMPANY".equals(businessType)
+                || !isIndividualPan(resolvedPan);
+
+        if (needsSignatoryPan) {
+            List<Map<String, Object>> sigRows = jdbc.queryForList("""
+                    SELECT id, director_name, is_self, mobile, verified_name,
+                           aadhaar_last4, pan_last4, pan_enc, aadhaar_enc,
+                           identity_details::text AS identity_details
+                      FROM business_signatories
+                     WHERE user_id = ? AND active = TRUE
+                     ORDER BY (status IN ('SELF_VERIFIED', 'KYC_COMPLETED')) DESC, created_at DESC
+                     LIMIT 1
+                    """, userId);
+            if (!sigRows.isEmpty()) {
+                Map<String, Object> sig = sigRows.get(0);
+                boolean isSelf = Boolean.TRUE.equals(sig.get("is_self"));
+                Map<String, Object> sigIdentity = jsonMap(sig.get("identity_details"));
+                Map<String, Object> sigPermAddr = asMap(sigIdentity.get("permanentAddress"));
+
+                String sigPan = decryptSafe(str(sig.get("pan_enc"))).toUpperCase(Locale.ROOT);
+                if (sigPan.isBlank()) {
+                    sigPan = str(sigIdentity.get("panNumber")).toUpperCase(Locale.ROOT);
+                }
+                if (isIndividualPan(sigPan)) {
+                    resolvedPan = sigPan;
+                    resolvedPanLast4 = firstNonBlank(str(sig.get("pan_last4")), last4(sigPan));
+                    panSource = "AUTHORIZED_SIGNATORY";
+                } else if (isSelf && isIndividualPan(d.pan())) {
+                    resolvedPan = d.pan();
+                    resolvedPanLast4 = d.panLast4();
+                    panSource = "SELF";
+                }
+
+                if (!isSelf) {
+                    externalSignatoryId = (UUID) sig.get("id");
+                    panName = firstNonBlank(
+                            str(sigIdentity.get("panName")),
+                            str(sig.get("verified_name")),
+                            str(sigIdentity.get("fullName")),
+                            str(sig.get("director_name")),
+                            panName);
+                    String sigAadhaar = decryptSafe(str(sig.get("aadhaar_enc")));
+                    if (!sigAadhaar.isBlank()) {
+                        aadhaar12 = sigAadhaar;
+                    } else if (!"SELF".equals(panSource)) {
+                        aadhaar12 = "";
+                    }
+                    aadhaarLast4 = firstNonBlank(str(sig.get("aadhaar_last4")), last4(sigAadhaar), aadhaarLast4);
+                    gender = normalizeGender(firstNonBlank(str(sigIdentity.get("gender")), gender));
+                    dob = normalizeDob(firstNonBlank(
+                            str(sigIdentity.get("dob")),
+                            str(sigIdentity.get("dateOfBirth")),
+                            dob));
+                    addrFull = firstNonBlank(
+                            str(sigPermAddr.get("fullAddress")),
+                            str(sigIdentity.get("address")),
+                            addrFull);
+                    addrCity = firstNonBlank(
+                            str(sigPermAddr.get("vtc")),
+                            str(sigPermAddr.get("city")),
+                            str(sigIdentity.get("city")),
+                            addrCity);
+                    addrPincode = firstNonBlank(
+                            str(sigPermAddr.get("pincode")),
+                            str(sigIdentity.get("pincode")),
+                            addrPincode);
+                }
+            }
+        }
+
+        List<String> missing = new ArrayList<>();
+        if (d.mobile().length() != 10) missing.add("10-digit mobile number");
+        if (panName.isBlank()) missing.add("Merchant / PAN holder name");
+        if (!isIndividualPan(resolvedPan)) {
+            missing.add("Individual PAN (or verified Authorized Signatory Individual PAN for company)");
+        }
+        if (!aadhaar12.matches("[0-9]{12}")) {
+            missing.add("12-digit Aadhaar number" + (externalSignatoryId != null ? " (Authorized Signatory)" : ""));
+        }
+        if (!dob.matches("\\d{4}-\\d{2}-\\d{2}")) missing.add("Date of birth (YYYY-MM-DD)");
+        if (d.email().isBlank() || !d.email().contains("@")) missing.add("Email address");
+        if (addrFull.isBlank() || addrCity.isBlank() || !addrPincode.matches("[1-9][0-9]{5}")) {
+            missing.add("Complete address (full address, city, 6-digit pincode)");
+        }
+        if (d.latitude().isBlank() || d.longitude().isBlank()) {
+            missing.add("Shop GPS coordinates (latitude & longitude)");
+        }
+        if (d.bankAccountId() == null) {
+            missing.add("Active settlement bank account");
+        } else if (!"VERIFIED".equalsIgnoreCase(d.bankVerificationStatus())) {
+            missing.add("Verified settlement bank account");
+        }
+
+        return new InstantPayOnboardingProfile(
+                userId,
+                d.bcAgentId(),
+                panName,
+                resolvedPan,
+                resolvedPanLast4,
+                panSource,
+                externalSignatoryId,
+                aadhaar12,
+                aadhaarLast4,
+                d.mobile(),
+                d.email(),
+                gender,
+                dob,
+                addrFull,
+                addrCity,
+                addrPincode,
+                d.latitude(),
+                d.longitude(),
+                d.gstin(),
+                d.bankAccountId(),
+                d.accountHolderName(),
+                d.accountNumber(),
+                d.ifsc(),
+                d.bankName(),
+                d.bankVerificationStatus(),
+                missing);
+    }
+
+    public static boolean isIndividualPan(String pan) {
+        return pan != null
+                && pan.length() == 10
+                && pan.matches("[A-Z]{5}[0-9]{4}[A-Z]")
+                && pan.charAt(3) == 'P';
     }
 
     public String toVendor2Csv(RetailerProviderDossier d, String apiUsername) {

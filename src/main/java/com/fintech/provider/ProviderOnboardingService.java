@@ -8,6 +8,8 @@ import com.fintech.emerald.EmeraldProperties;
 import com.fintech.emerald.EmeraldTraceContext;
 import com.fintech.finance.RetailerBankService;
 import com.fintech.identity.AdminAccess;
+import com.fintech.instantpay.InstantPayClient;
+import com.fintech.instantpay.InstantPayProperties;
 import com.fintech.platform.crypto.FieldCipher;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiException;
@@ -35,6 +37,7 @@ public class ProviderOnboardingService {
     private static final Logger log = LoggerFactory.getLogger(ProviderOnboardingService.class);
     public static final String PROVIDER_EMERALD = "EMERALD";
     public static final String PROVIDER_ISERVEU = "ISERVEU";
+    public static final String PROVIDER_INSTANTPAY = "INSTANTPAY";
 
     public record ProviderPriority(String providerCode, Integer priority) {}
 
@@ -46,6 +49,8 @@ public class ProviderOnboardingService {
     private final EmeraldProperties emeraldProps;
     private final RetailerOnboardingProfileAssembler assembler;
     private final RetailerBankService retailerBanks;
+    private final InstantPayClient instantPayClient;
+    private final InstantPayProperties instantPayProps;
 
     @Autowired
     public ProviderOnboardingService(
@@ -56,7 +61,9 @@ public class ProviderOnboardingService {
             EmeraldClient emeraldClient,
             EmeraldProperties emeraldProps,
             RetailerOnboardingProfileAssembler assembler,
-            RetailerBankService retailerBanks) {
+            RetailerBankService retailerBanks,
+            InstantPayClient instantPayClient,
+            InstantPayProperties instantPayProps) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.access = access;
@@ -65,6 +72,20 @@ public class ProviderOnboardingService {
         this.emeraldProps = emeraldProps;
         this.assembler = assembler;
         this.retailerBanks = retailerBanks;
+        this.instantPayClient = instantPayClient;
+        this.instantPayProps = instantPayProps;
+    }
+
+    public ProviderOnboardingService(
+            JdbcTemplate jdbc,
+            ObjectMapper mapper,
+            AdminAccess access,
+            FieldCipher fieldCipher,
+            EmeraldClient emeraldClient,
+            EmeraldProperties emeraldProps,
+            RetailerOnboardingProfileAssembler assembler,
+            RetailerBankService retailerBanks) {
+        this(jdbc, mapper, access, fieldCipher, emeraldClient, emeraldProps, assembler, retailerBanks, null, null);
     }
 
     public ProviderOnboardingService(
@@ -246,12 +267,168 @@ public class ProviderOnboardingService {
         if (PROVIDER_EMERALD.equals(providerCode)) {
             return onboardToEmerald(admin, userId, aadhaarOverride, emailOverride, requestedPipe);
         }
+        if (PROVIDER_INSTANTPAY.equals(providerCode)) {
+            return onboardToInstantPay(admin, userId, aadhaarOverride, emailOverride);
+        }
         if (PROVIDER_ISERVEU.equals(providerCode)) {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "ISERVEU_DETAILS_REQUIRED",
                     "Enter the iServeU account number and VPA shared for this retailer.");
         }
         throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "UNSUPPORTED_PROVIDER",
                 "Automated API onboarding is not yet configured for provider: " + providerCode);
+    }
+
+    @Transactional
+    public Map<String, Object> onboardToInstantPay(
+            AuthPrincipal admin,
+            UUID userId,
+            String aadhaarOverride,
+            String emailOverride) {
+        access.assertNetworkUser(userId);
+        requireInstantPayConfigured();
+        ensureProfileRow(userId);
+
+        RetailerOnboardingProfileAssembler.InstantPayOnboardingProfile initialProfile =
+                assembler.assembleForInstantPay(userId);
+
+        if (aadhaarOverride != null && !aadhaarOverride.isBlank()) {
+            String validAadhaar = AadhaarValidator.validateAndNormalize(aadhaarOverride, initialProfile.aadhaarLast4());
+            if (initialProfile.externalSignatoryId() != null) {
+                jdbc.update("""
+                        UPDATE business_signatories
+                           SET aadhaar_enc = ?,
+                               aadhaar_last4 = CASE WHEN aadhaar_last4 IS NULL OR aadhaar_last4 = '' THEN ? ELSE aadhaar_last4 END,
+                               updated_at = now()
+                         WHERE id = ? AND user_id = ?
+                        """, fieldCipher.encrypt(validAadhaar), validAadhaar.substring(8),
+                        initialProfile.externalSignatoryId(), userId);
+            } else {
+                jdbc.update("""
+                        UPDATE agent_kyc_profiles
+                           SET aadhaar_enc = ?,
+                               aadhaar_last4 = CASE WHEN aadhaar_last4 IS NULL OR aadhaar_last4 = '' THEN ? ELSE aadhaar_last4 END,
+                               updated_at = now()
+                         WHERE user_id = ?
+                        """, fieldCipher.encrypt(validAadhaar), validAadhaar.substring(8), userId);
+            }
+        }
+        if (emailOverride != null && !emailOverride.isBlank()) {
+            String cleanEmail = emailOverride.trim().toLowerCase(Locale.ROOT);
+            if (!cleanEmail.matches("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")) {
+                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_EMAIL",
+                        "Enter a valid email address for the retailer");
+            }
+            jdbc.update("UPDATE users SET email = ?, updated_at = now() WHERE id = ?", cleanEmail, userId);
+        }
+
+        RetailerOnboardingProfileAssembler.InstantPayOnboardingProfile ip = assembler.assembleForInstantPay(userId);
+        if (!ip.readyForInstantPay()) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "ONBOARDING_FIELDS_MISSING",
+                    "Missing required retailer fields for InstantPay onboarding: " + String.join(", ", ip.missingFields()));
+        }
+
+        UUID channelId = ensureInstantPayChannel();
+        InstantPayClient.MinKycResponse minKycRes;
+        String outletId;
+
+        try (var ignored = EmeraldTraceContext.open(userId, "STEP1_ONBOARD", ip.bcAgentId())) {
+            minKycRes = instantPayClient.signupMinKyc(new InstantPayClient.MinKycRequest(
+                    ip.mobile(),
+                    ip.panName(),
+                    ip.gender(),
+                    ip.individualPan(),
+                    ip.email(),
+                    ip.addressFull(),
+                    ip.addressCity(),
+                    ip.addressPincode(),
+                    ip.aadhaar12(),
+                    ip.dateOfBirth(),
+                    ip.latitude(),
+                    ip.longitude(),
+                    ip.gstin()));
+            outletId = minKycRes.outletId();
+
+            // Idempotent recovery: if already registered on InstantPay, look up by mobile or PAN via /user/outlet/list
+            if (outletId == null || outletId.isBlank()) {
+                InstantPayClient.OutletListResponse byMob = instantPayClient.listOutlets(1, 20, 0, ip.mobile(), "");
+                if (!byMob.records().isEmpty()) {
+                    outletId = byMob.records().get(0).outletId();
+                }
+            }
+            if (outletId == null || outletId.isBlank()) {
+                InstantPayClient.OutletListResponse byPan = instantPayClient.listOutlets(1, 20, 0, "", ip.individualPan());
+                if (!byPan.records().isEmpty()) {
+                    outletId = byPan.records().get(0).outletId();
+                }
+            }
+            if (outletId == null || outletId.isBlank()) {
+                List<String> saved = jdbc.queryForList("""
+                        SELECT outlet_code FROM provider_merchant_accounts
+                         WHERE user_id = ? AND provider_code = ?
+                        """, String.class, userId, PROVIDER_INSTANTPAY);
+                if (!saved.isEmpty() && saved.get(0) != null && !saved.get(0).isBlank()) {
+                    outletId = saved.get(0).trim();
+                }
+            }
+        }
+
+        if (outletId == null || outletId.isBlank()) {
+            String reason = (minKycRes.message() == null || minKycRes.message().isBlank())
+                    ? "InstantPay rejected outlet onboarding (code " + minKycRes.statusCode() + ")"
+                    : minKycRes.message();
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INSTANTPAY_ONBOARD_FAILED", reason);
+        }
+
+        UUID merchantAccountId = upsertMerchantAccount(
+                userId, PROVIDER_INSTANTPAY, "DIRECT", outletId, "ACTIVE", admin.userId(), minKycRes.raw());
+
+        String initialKyc = "PENDING_BIOMETRIC";
+        if (outletId.matches("[0-9]+")) {
+            try (var ignored = EmeraldTraceContext.open(userId, "STEP1_EKYC_CHECK", ip.bcAgentId())) {
+                String spkey = instantPayProps != null ? instantPayProps.defaultSpkey() : "WAP";
+                String gw = instantPayProps != null ? instantPayProps.defaultGw() : "JA";
+                InstantPayClient.BiometricStatusResponse bio = instantPayClient.checkBiometricKycStatus(outletId, spkey, gw);
+                initialKyc = resolveInstantPayKycState(bio);
+            } catch (Exception ex) {
+                log.warn("INSTANTPAY initial biometric status check skipped user={} outlet={}: {}",
+                        userId, outletId, ex.getMessage());
+            }
+        }
+
+        Integer defaultPriority = nextAvailablePriority(userId, channelId);
+        jdbc.update("""
+                INSERT INTO provider_pipe_activations
+                    (id, user_id, channel_id, merchant_account_id, pipe_outlet_code,
+                     onboarding_status, kyc_status, enabled_for_retailer, retailer_priority, last_synced_at)
+                VALUES (?, ?, ?, ?, ?, 'ONBOARDED', ?, FALSE, ?, now())
+                ON CONFLICT (user_id, channel_id) DO UPDATE
+                   SET merchant_account_id = EXCLUDED.merchant_account_id,
+                       pipe_outlet_code = EXCLUDED.pipe_outlet_code,
+                       onboarding_status = 'ONBOARDED',
+                       kyc_status = CASE
+                           WHEN provider_pipe_activations.kyc_status = 'FULL_KYC' THEN 'FULL_KYC'
+                           ELSE EXCLUDED.kyc_status
+                       END,
+                       retailer_priority = COALESCE(provider_pipe_activations.retailer_priority, EXCLUDED.retailer_priority),
+                       last_error = NULL,
+                       last_synced_at = now(),
+                       updated_at = now()
+                """, UUID.randomUUID(), userId, channelId, merchantAccountId, outletId, initialKyc, defaultPriority);
+
+        log.info("INSTANTPAY onboarded user={} outlet={} panSource={} kyc={} byAdmin={}",
+                userId, outletId, ip.panSource(), initialKyc, admin.userId());
+
+        // Mandatory Step 1b: immediately add retailer's verified bank account on InstantPay so payouts match 1:1
+        if (ip.bankAccountId() != null) {
+            try {
+                syncInstantPayBankInternal(userId, ip, outletId, channelId);
+            } catch (Exception ex) {
+                log.warn("INSTANTPAY initial bank sync failed for user={} outlet={}: {}",
+                        userId, outletId, ex.getMessage());
+            }
+        }
+
+        return buildAdminView(userId);
     }
 
     @Transactional
@@ -387,8 +564,37 @@ public class ProviderOnboardingService {
         if (PROVIDER_EMERALD.equals(providerCode)) {
             return syncEmeraldBank(admin, userId, pipeCode);
         }
+        if (PROVIDER_INSTANTPAY.equals(providerCode)) {
+            return syncInstantPayBank(admin, userId);
+        }
         throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "UNSUPPORTED_PROVIDER",
                 "Bank sync is not yet configured for provider: " + providerCode);
+    }
+
+    @Transactional
+    public Map<String, Object> syncInstantPayBank(AuthPrincipal admin, UUID userId) {
+        access.assertNetworkUser(userId);
+        requireInstantPayConfigured();
+        RetailerOnboardingProfileAssembler.InstantPayOnboardingProfile ip = assembler.assembleForInstantPay(userId);
+        if (ip.bankAccountId() == null) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "BANK_ACCOUNT_MISSING",
+                    "Retailer does not have an active settlement bank account on file.");
+        }
+        if (!"VERIFIED".equalsIgnoreCase(ip.bankVerificationStatus())) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "BANK_NOT_VERIFIED",
+                    "Verify the retailer's settlement bank account first before syncing to InstantPay.");
+        }
+        String outletId = requireInstantPayOutletCode(userId);
+        UUID channelId = ensureInstantPayChannel();
+        InstantPayClient.BankSyncResponse syncRes = syncInstantPayBankInternal(userId, ip, outletId, channelId);
+        Map<String, Object> view = buildAdminView(userId);
+        view.put("bankSyncStatus", syncRes.synced() ? "SYNCED" : "FAILED");
+        view.put("bankSyncRemarks", syncRes.message());
+        view.put("lastBankSyncResult", Map.of(
+                "synced", syncRes.synced(),
+                "statusCode", syncRes.statusCode(),
+                "message", syncRes.message()));
+        return view;
     }
 
     @Transactional
@@ -399,10 +605,20 @@ public class ProviderOnboardingService {
     }
 
     @Transactional
+    public Map<String, Object> refreshInstantPayStatus(UUID userId) {
+        access.assertNetworkUser(userId);
+        syncFromInstantPayLive(userId);
+        return buildAdminView(userId);
+    }
+
+    @Transactional
     public Map<String, Object> refreshProviderStatus(UUID userId, String providerCodeRaw) {
         String providerCode = normalizeProviderCode(providerCodeRaw);
         if (PROVIDER_EMERALD.equals(providerCode)) {
             return refreshEmeraldStatus(userId);
+        }
+        if (PROVIDER_INSTANTPAY.equals(providerCode)) {
+            return refreshInstantPayStatus(userId);
         }
         access.assertNetworkUser(userId);
         return buildAdminView(userId);
@@ -518,6 +734,61 @@ public class ProviderOnboardingService {
     }
 
     @Transactional
+    public boolean syncFromInstantPayLive(UUID userId) {
+        if (instantPayClient == null || instantPayProps == null || !instantPayProps.isConfigured()) {
+            return false;
+        }
+        List<Map<String, Object>> accounts = jdbc.queryForList("""
+                SELECT id, outlet_code
+                  FROM provider_merchant_accounts
+                 WHERE user_id = ? AND provider_code = ?
+                """, userId, PROVIDER_INSTANTPAY);
+        if (accounts.isEmpty()) {
+            return false;
+        }
+        UUID merchantAccountId = (UUID) accounts.get(0).get("id");
+        String outletId = str(accounts.get(0).get("outlet_code"));
+        if (!outletId.matches("[0-9]+")) {
+            return false;
+        }
+
+        UUID channelId = ensureInstantPayChannel();
+        InstantPayClient.BiometricStatusResponse bio;
+        try (var ignored = EmeraldTraceContext.open(userId, "STEP3_STATUS_SYNC")) {
+            bio = instantPayClient.checkBiometricKycStatus(
+                    outletId, instantPayProps.defaultSpkey(), instantPayProps.defaultGw());
+        }
+        if (!bio.success()) {
+            return false;
+        }
+
+        String nextKyc = resolveInstantPayKycState(bio);
+        boolean verified = "FULL_KYC".equals(nextKyc);
+
+        jdbc.update("""
+                UPDATE provider_merchant_accounts
+                   SET last_synced_at = now(), updated_at = now()
+                 WHERE id = ?
+                """, merchantAccountId);
+
+        jdbc.update("""
+                UPDATE provider_pipe_activations
+                   SET kyc_status = CASE
+                           WHEN kyc_status = 'FULL_KYC' THEN 'FULL_KYC'
+                           ELSE ?
+                       END,
+                       biometric_verified_at = CASE
+                           WHEN ? AND biometric_verified_at IS NULL THEN now()
+                           ELSE biometric_verified_at
+                       END,
+                       last_synced_at = now(),
+                       updated_at = now()
+                 WHERE user_id = ? AND channel_id = ?
+                """, nextKyc, verified, userId, channelId);
+        return true;
+    }
+
+    @Transactional
     public Map<String, Object> updateRetailerChannel(
             AuthPrincipal admin,
             UUID userId,
@@ -605,8 +876,44 @@ public class ProviderOnboardingService {
         return res;
     }
 
+    private InstantPayClient.BankSyncResponse syncInstantPayBankInternal(
+            UUID userId,
+            RetailerOnboardingProfileAssembler.InstantPayOnboardingProfile ip,
+            String outletId,
+            UUID channelId) {
+        String lat = ip.latitude().isBlank() ? "19.0760" : ip.latitude();
+        String lng = ip.longitude().isBlank() ? "72.8777" : ip.longitude();
+
+        InstantPayClient.BankSyncResponse res;
+        try (var ignored = EmeraldTraceContext.open(
+                userId,
+                "STEP1_BANK_SYNC",
+                ip.bankAccountId() != null ? ip.bankAccountId().toString() : null)) {
+            res = instantPayClient.addBankAccount(
+                    outletId,
+                    ip.accountNumber(),
+                    ip.ifsc(),
+                    lat,
+                    lng);
+        }
+
+        String nextSyncStatus = res.synced() ? "SYNCED" : "FAILED";
+        jdbc.update("""
+                UPDATE provider_pipe_activations
+                   SET bank_sync_status = ?,
+                       synced_bank_account_id = ?,
+                       bank_sync_remarks = ?,
+                       last_synced_at = now(),
+                       updated_at = now()
+                 WHERE user_id = ? AND channel_id = ?
+                """, nextSyncStatus, ip.bankAccountId(), res.message(), userId, channelId);
+        return res;
+    }
+
     private Map<String, Object> buildAdminView(UUID userId) {
         RetailerOnboardingProfileAssembler.RetailerProviderDossier d = assembler.assemble(userId);
+        RetailerOnboardingProfileAssembler.InstantPayOnboardingProfile ip = assembler.assembleForInstantPay(userId);
+        boolean emeraldEnabled = emeraldProps == null || emeraldProps.enabled();
 
         Map<String, Object> dossierSummary = new LinkedHashMap<>();
         dossierSummary.put("bcAgentId", d.bcAgentId());
@@ -617,10 +924,13 @@ public class ProviderOnboardingService {
         dossierSummary.put("email", d.email());
         dossierSummary.put("gender", d.gender());
         dossierSummary.put("dateOfBirth", d.dateOfBirth());
-        dossierSummary.put("hasPan", !d.pan().isBlank());
-        dossierSummary.put("panMasked", d.panLast4().isBlank() ? "" : "XXXXXX" + d.panLast4());
-        dossierSummary.put("hasFullAadhaar", d.aadhaar().matches("[0-9]{12}"));
-        dossierSummary.put("aadhaarMasked", d.aadhaarLast4().isBlank() ? "" : "XXXX-XXXX-" + d.aadhaarLast4());
+        dossierSummary.put("hasPan", !d.pan().isBlank() || !ip.individualPan().isBlank());
+        dossierSummary.put("panMasked", ip.individualPanLast4().isBlank()
+                ? (d.panLast4().isBlank() ? "" : "XXXXXX" + d.panLast4())
+                : "XXXXXX" + ip.individualPanLast4());
+        dossierSummary.put("panSource", ip.panSource());
+        dossierSummary.put("hasFullAadhaar", ip.aadhaar12().matches("[0-9]{12}"));
+        dossierSummary.put("aadhaarMasked", ip.aadhaarLast4().isBlank() ? "" : "XXXX-XXXX-" + ip.aadhaarLast4());
         dossierSummary.put("gstin", d.gstin());
         dossierSummary.put("shopAddress", d.shopAddress());
         dossierSummary.put("shopArea", d.shopArea());
@@ -640,7 +950,9 @@ public class ProviderOnboardingService {
         dossierSummary.put("businessVerified", d.businessVerified());
         dossierSummary.put("agreementSigned", d.agreementSigned());
         dossierSummary.put("readyForEmerald", d.readyForEmerald());
-        dossierSummary.put("missingFields", d.missingFields());
+        dossierSummary.put("readyForInstantPay", ip.readyForInstantPay());
+        boolean ipConfigured = instantPayProps != null && instantPayProps.isConfigured();
+        dossierSummary.put("missingFields", ipConfigured ? ip.missingFields() : d.missingFields());
 
         List<Map<String, Object>> merchantAccounts = jdbc.queryForList("""
                 SELECT id, provider_code, entity_code, outlet_code, status, onboarded_at, last_synced_at
@@ -648,6 +960,9 @@ public class ProviderOnboardingService {
                  WHERE user_id = ?
                  ORDER BY created_at ASC
                 """, userId);
+
+        String emeraldWhereFilter = emeraldEnabled ? "" : " WHERE c.provider_code <> 'EMERALD' ";
+        String emeraldAndFilter = emeraldEnabled ? "" : " AND c.provider_code <> 'EMERALD' ";
 
         List<Map<String, Object>> activations = jdbc.queryForList("""
                 SELECT a.id, a.channel_id, c.channel_key, c.provider_code, c.pipe_code, c.display_label,
@@ -660,6 +975,7 @@ public class ProviderOnboardingService {
                   JOIN service_provider_channels c ON c.id = a.channel_id
                   JOIN provider_merchant_accounts m ON m.id = a.merchant_account_id
                  WHERE a.user_id = ?
+                """ + emeraldAndFilter + """
                  ORDER BY c.priority_order ASC
                 """, userId);
 
@@ -694,6 +1010,7 @@ public class ProviderOnboardingService {
                   FROM service_provider_channels c
                   LEFT JOIN provider_pipe_activations a ON a.channel_id = c.id AND a.user_id = ?
                   LEFT JOIN provider_merchant_accounts m ON m.id = a.merchant_account_id
+                """ + emeraldWhereFilter + """
                  ORDER BY c.priority_order ASC, c.created_at ASC
                 """, userId);
 
@@ -709,9 +1026,10 @@ public class ProviderOnboardingService {
                 """, userId);
 
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("emeraldConfigured", emeraldProps.isConfigured());
-        out.put("defaultPipe", emeraldProps.defaultPipe());
-        out.put("entityCode", emeraldProps.entityCode());
+        out.put("emeraldConfigured", emeraldEnabled && emeraldProps != null && emeraldProps.isConfigured());
+        out.put("instantPayConfigured", instantPayProps != null && instantPayProps.isConfigured());
+        out.put("defaultPipe", emeraldProps != null ? emeraldProps.defaultPipe() : "INSTANTPAY");
+        out.put("entityCode", emeraldProps != null ? emeraldProps.entityCode() : "DIRECT");
         out.put("bankVerificationStatus", d.bankVerificationStatus());
         out.put("banks", retailerBanks != null ? retailerBanks.list(userId) : List.of());
         out.put("dossier", dossierSummary);
@@ -830,10 +1148,11 @@ public class ProviderOnboardingService {
             String initialKycStatus,
             String lastError) {
         UUID id = UUID.randomUUID();
+        Integer defaultPriority = nextAvailablePriority(userId, channelId);
         jdbc.update("""
                 INSERT INTO provider_pipe_activations
-                    (id, user_id, channel_id, merchant_account_id, pipe_outlet_code, onboarding_status, kyc_status, last_error, last_synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, now())
+                    (id, user_id, channel_id, merchant_account_id, pipe_outlet_code, onboarding_status, kyc_status, retailer_priority, last_error, last_synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, now())
                 ON CONFLICT (user_id, channel_id) DO UPDATE
                    SET merchant_account_id = EXCLUDED.merchant_account_id,
                        pipe_outlet_code = CASE WHEN EXCLUDED.pipe_outlet_code <> '' THEN EXCLUDED.pipe_outlet_code ELSE provider_pipe_activations.pipe_outlet_code END,
@@ -842,11 +1161,12 @@ public class ProviderOnboardingService {
                            WHEN provider_pipe_activations.kyc_status = 'FULL_KYC' THEN 'FULL_KYC'
                            ELSE EXCLUDED.kyc_status
                        END,
+                       retailer_priority = COALESCE(provider_pipe_activations.retailer_priority, EXCLUDED.retailer_priority),
                        last_error = EXCLUDED.last_error,
                        last_synced_at = now(),
                        updated_at = now()
                 """, id, userId, channelId, merchantAccountId,
-                pipeOutletCode == null ? "" : pipeOutletCode, onboardingStatus, initialKycStatus, lastError);
+                pipeOutletCode == null ? "" : pipeOutletCode, onboardingStatus, initialKycStatus, defaultPriority, lastError);
     }
 
     private String requireEmeraldOutletCode(UUID userId) {
@@ -859,6 +1179,80 @@ public class ProviderOnboardingService {
                     "Onboard this retailer to Emerald first before syncing bank details.");
         }
         return codes.get(0).trim();
+    }
+
+    private String requireInstantPayOutletCode(UUID userId) {
+        List<String> codes = jdbc.queryForList("""
+                SELECT outlet_code FROM provider_merchant_accounts
+                 WHERE user_id = ? AND provider_code = ?
+                """, String.class, userId, PROVIDER_INSTANTPAY);
+        if (codes.isEmpty() || codes.get(0) == null || codes.get(0).isBlank()) {
+            throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "NOT_ONBOARDED_ON_INSTANTPAY",
+                    "Onboard this retailer to InstantPay first before syncing bank details.");
+        }
+        return codes.get(0).trim();
+    }
+
+    private UUID ensureInstantPayChannel() {
+        List<UUID> existing = jdbc.queryForList("""
+                SELECT id FROM service_provider_channels WHERE provider_code = ? AND pipe_code = 'DIRECT'
+                """, UUID.class, PROVIDER_INSTANTPAY);
+        if (!existing.isEmpty()) {
+            return existing.get(0);
+        }
+        UUID id = UUID.fromString("e1000000-0000-0000-0000-000000000042");
+        jdbc.update("""
+                INSERT INTO service_provider_channels
+                    (id, channel_key, provider_code, pipe_code, display_label, priority_order, config_json)
+                VALUES (?, 'ch_instantpay_direct', ?, 'DIRECT', 'InstantPay · Direct', 2,
+                        '{"spkey":"WAP","gw":"JA","upiCashout":{"min":100,"max":5000,"step":100}}'::jsonb)
+                ON CONFLICT (provider_code, pipe_code) DO NOTHING
+                """, id, PROVIDER_INSTANTPAY);
+        return jdbc.queryForObject(
+                "SELECT id FROM service_provider_channels WHERE provider_code = ? AND pipe_code = 'DIRECT'",
+                UUID.class, PROVIDER_INSTANTPAY);
+    }
+
+    private Integer nextAvailablePriority(UUID userId, UUID targetChannelId) {
+        List<Integer> taken = jdbc.queryForList("""
+                SELECT DISTINCT retailer_priority
+                  FROM provider_pipe_activations
+                 WHERE user_id = ?
+                   AND channel_id <> ?
+                   AND retailer_priority IS NOT NULL
+                """, Integer.class, userId, targetChannelId);
+        for (int p = 1; p <= 3; p++) {
+            if (!taken.contains(p)) {
+                return p;
+            }
+        }
+        return null;
+    }
+
+    public static String resolveInstantPayKycState(InstantPayClient.BiometricStatusResponse bio) {
+        if (bio == null || !bio.success()) {
+            return "PENDING_BIOMETRIC";
+        }
+        if ("NOTYETREGISTERED".equalsIgnoreCase(bio.actCode())) {
+            return "PENDING_BIOMETRIC";
+        }
+        if ("NO-ACTION-REQUIRED".equalsIgnoreCase(bio.action())) {
+            String bankSt = bio.bankStatus() == null ? "" : bio.bankStatus().trim().toUpperCase(Locale.ROOT);
+            if ("APPROVED".equals(bankSt) || bankSt.isEmpty()) {
+                return "FULL_KYC";
+            }
+            if ("PENDING".equals(bankSt) || "APPROVAL_PENDING".equals(bankSt)) {
+                return "APPROVAL_PENDING";
+            }
+        }
+        return "PENDING_BIOMETRIC";
+    }
+
+    private void requireInstantPayConfigured() {
+        if (instantPayClient == null || instantPayProps == null || !instantPayProps.isConfigured()) {
+            throw ApiException.of(HttpStatus.SERVICE_UNAVAILABLE, "INSTANTPAY_NOT_CONFIGURED",
+                    "InstantPay API credentials (APP_INSTANTPAY_CLIENT_ID / APP_INSTANTPAY_CLIENT_SECRET) are not configured.");
+        }
     }
 
     private void ensureProfileRow(UUID userId) {
