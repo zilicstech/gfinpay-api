@@ -783,6 +783,13 @@ public class AdminPlatformService {
                        personal_status = 'NOT_VERIFIED',
                        updated_at = now()
                 """, userId);
+        jdbc.update("""
+                UPDATE onboarding_journeys
+                   SET status = 'EXPIRED', last_activity_at = now()
+                 WHERE user_id = ?
+                   AND purpose = 'REVERIFY'
+                   AND status IN ('IN_PROGRESS', 'NEEDS_REVIEW', 'ABANDONED')
+                """, userId);
         sessions.revokeAllForUser(userId, "ADMIN_REQUIRE_REVERIFY");
         journeyTracker.recordUserMilestone(
                 userId, "REVERIFY_REQUIRED", "INFO",

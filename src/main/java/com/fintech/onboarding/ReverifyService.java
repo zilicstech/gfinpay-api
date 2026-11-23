@@ -344,7 +344,15 @@ public class ReverifyService {
                  LIMIT 1
                 """, userId);
         if (!open.isEmpty()) {
-            return open.get(0);
+            Map<String, Object> journey = open.get(0);
+            if (!"NEEDS_REVIEW".equals(String.valueOf(journey.get("status"))) || !adminAskedToRestart((UUID) journey.get("id"))) {
+                return journey;
+            }
+            jdbc.update("""
+                    UPDATE onboarding_journeys
+                       SET status = 'EXPIRED', last_activity_at = now()
+                     WHERE id = ?
+                    """, journey.get("id"));
         }
         UUID journeyId = journeyTracker.createJourney(null, userId, "REVERIFY", JourneyTracker.LINK_OPENED);
         journeyTracker.record(
@@ -352,6 +360,18 @@ public class ReverifyService {
                 Map.of("purpose", "REVERIFY"),
                 null, null, null, null, true);
         return Map.of("id", journeyId, "current_step", JourneyTracker.LINK_OPENED, "status", "IN_PROGRESS");
+    }
+
+    /** A review lock must not survive a later admin request to verify again. */
+    private boolean adminAskedToRestart(UUID journeyId) {
+        List<String> steps = jdbc.queryForList("""
+                SELECT step
+                  FROM onboarding_journey_events
+                 WHERE journey_id = ?
+                 ORDER BY created_at DESC
+                 LIMIT 1
+                """, String.class, journeyId);
+        return !steps.isEmpty() && "REVERIFY_REQUIRED".equals(steps.get(0));
     }
 
     private Map<String, Object> loadUser(UUID userId) {
