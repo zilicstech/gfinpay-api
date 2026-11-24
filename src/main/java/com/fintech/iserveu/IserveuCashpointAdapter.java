@@ -41,7 +41,8 @@ public class IserveuCashpointAdapter implements UpiCashoutPort {
             return new ProviderModels.QrResult(false, "Cash terminal is not configured.", "", "", "", 90, "");
         }
         String payee = channel.payeeVpa() == null ? "" : channel.payeeVpa().trim();
-        if (payee.isBlank()) {
+        String terminalId = terminalId(channel.pipeOutletCode());
+        if (payee.isBlank() || terminalId.isBlank()) {
             gateway.noteNotSent("CASHPOINT_QR", "Cash terminal is not configured.", request);
             return new ProviderModels.QrResult(false, "Cash terminal is not configured.", "", "", "", 90, "");
         }
@@ -49,7 +50,7 @@ public class IserveuCashpointAdapter implements UpiCashoutPort {
             String clientRef = request.externalRef().length() > 19
                     ? request.externalRef().substring(0, 19)
                     : request.externalRef();
-            JsonNode node = gateway.post(props.cashpointUrl(), requestBody(request, clientRef, payee));
+            JsonNode node = gateway.post(props.cashpointUrl(), requestBody(request, clientRef, payee, terminalId));
             ProviderModels.QrResult result = interpret(node);
             log.info("ISERVEU_QR status={} clientRef={}", result.success() ? "OK" : "FAILED", clientRef);
             return result;
@@ -136,7 +137,13 @@ public class IserveuCashpointAdapter implements UpiCashoutPort {
         return new ProviderModels.QrResult(true, desc, txnId, intent, "", 90, amount);
     }
 
-    private Map<String, Object> requestBody(ProviderModels.QrRequest request, String clientRef, String payee) {
+    /** iServeU tid is the retailer account number saved at onboarding, capped at 20 digits. */
+    static String terminalId(String accountNumber) {
+        String digits = accountNumber == null ? "" : accountNumber.replaceAll("\\D", "");
+        return digits.length() <= 20 ? digits : digits.substring(0, 20);
+    }
+
+    private Map<String, Object> requestBody(ProviderModels.QrRequest request, String clientRef, String payee, String terminalId) {
         Map<String, Object> device = new LinkedHashMap<>();
         device.put("deviceType", "Web");
         device.put("androidOsVersion", "14");
@@ -151,7 +158,7 @@ public class IserveuCashpointAdapter implements UpiCashoutPort {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("payeeVPA", payee);
         body.put("paymentMode", "UPI_CASHPOINT");
-        body.put("tid", clientRef);
+        body.put("tid", terminalId);
         body.put("txnAmount", String.valueOf(request.amountRupees()));
         body.put("channelId", "WEBUSER");
         body.put("txnNote", "Cashout");

@@ -107,6 +107,11 @@ class IserveuCryptoTest {
         assertEquals("gfin9xm3wg.cwbc@nsdlpbma", line.vpa());
 
         String ref = ExternalRefs.payoutClientRef(UUID.fromString("11111111-1111-1111-1111-111111111111"));
+        assertEquals("63043914493699866190", IserveuCashpointAdapter.terminalId("63043914493699866190"));
+        assertEquals("63043914493699866190", IserveuCashpointAdapter.terminalId("6304-3914-4936-9986-6190"));
+        assertEquals(20, IserveuCashpointAdapter.terminalId("63043914493699866190123").length());
+        assertEquals("", IserveuCashpointAdapter.terminalId(""));
+
         assertEquals(19, ref.length());
         assertTrue(ref.matches("[A-Z]{3}[0-9]{16}"));
         assertEquals(ref, ExternalRefs.payoutClientRef(UUID.fromString("11111111-1111-1111-1111-111111111111")));
