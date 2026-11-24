@@ -4,21 +4,17 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fintech.provider.canonical.ProviderModels;
 import com.fintech.provider.port.ProviderCallbackPort;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.Locale;
 import java.util.Map;
 import org.springframework.stereotype.Component;
 
-/** Verifies the iServeU cash-point callback and maps it to a settlement event. */
+/** Maps an iServeU callback body to a settlement event. The callback does not carry a secret. */
 @Component
 public class IserveuCallbackAdapter implements ProviderCallbackPort {
 
-    private final IserveuProperties props;
     private final ObjectMapper mapper;
 
-    public IserveuCallbackAdapter(IserveuProperties props, ObjectMapper mapper) {
-        this.props = props;
+    public IserveuCallbackAdapter(ObjectMapper mapper) {
         this.mapper = mapper;
     }
 
@@ -27,21 +23,8 @@ public class IserveuCallbackAdapter implements ProviderCallbackPort {
         return "ISERVEU";
     }
 
-    public boolean passKeyMatches(String provided) {
-        if (props.passKey().isBlank() || provided == null || provided.isBlank()) {
-            return false;
-        }
-        return MessageDigest.isEqual(
-                props.passKey().getBytes(StandardCharsets.UTF_8),
-                provided.trim().getBytes(StandardCharsets.UTF_8));
-    }
-
     @Override
     public ProviderModels.SettlementEvent verify(Map<String, String> headers, String rawBody) {
-        String pass = headers == null ? "" : headers.getOrDefault("pass_key", "");
-        if (!passKeyMatches(pass)) {
-            return null;
-        }
         try {
             return interpret(mapper.readTree(rawBody == null ? "{}" : rawBody));
         } catch (Exception e) {

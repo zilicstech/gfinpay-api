@@ -27,58 +27,40 @@ public class WebhookController {
     private final ProviderCallbackLog callbacks;
     private final ObjectMapper mapper;
     private final InboundCallbackOrchestrator inbound;
-    private final com.fintech.iserveu.IserveuProperties iserveu;
     private final com.fintech.iserveu.IserveuAuditLogService iserveuAudit;
 
     public WebhookController(WebhookService webhookService, WebhookSigner signer, ProviderCallbackLog callbacks,
                              ObjectMapper mapper, InboundCallbackOrchestrator inbound,
-                             com.fintech.iserveu.IserveuProperties iserveu,
                              com.fintech.iserveu.IserveuAuditLogService iserveuAudit) {
         this.webhookService = webhookService;
         this.signer = signer;
         this.callbacks = callbacks;
         this.mapper = mapper;
         this.inbound = inbound;
-        this.iserveu = iserveu;
         this.iserveuAudit = iserveuAudit;
     }
 
     @PostMapping("/iserveu/upi-cashpoint")
-    public ResponseEntity<Map<String, Object>> iserveuCashpoint(
-            @RequestHeader(value = "pass_key", required = false) String passKey,
-            @RequestHeader(value = "header_secrets", required = false) String headerSecrets,
-            @RequestBody(required = false) String rawBody) {
-        return acceptIserveuWebhook("/webhooks/iserveu/upi-cashpoint", passKey, headerSecrets, rawBody, true);
+    public ResponseEntity<Map<String, Object>> iserveuCashpoint(@RequestBody(required = false) String rawBody) {
+        return acceptIserveuWebhook("/webhooks/iserveu/upi-cashpoint", rawBody, true);
     }
 
     @PostMapping("/iserveu/payout")
-    public ResponseEntity<Map<String, Object>> iserveuPayout(
-            @RequestHeader(value = "pass_key", required = false) String passKey,
-            @RequestHeader(value = "header_secrets", required = false) String headerSecrets,
-            @RequestBody(required = false) String rawBody) {
-        return acceptIserveuWebhook("/webhooks/iserveu/payout", passKey, headerSecrets, rawBody, false);
+    public ResponseEntity<Map<String, Object>> iserveuPayout(@RequestBody(required = false) String rawBody) {
+        return acceptIserveuWebhook("/webhooks/iserveu/payout", rawBody, false);
     }
 
-    private ResponseEntity<Map<String, Object>> acceptIserveuWebhook(
-            String path, String passKey, String headerSecrets, String rawBody, boolean cashpoint) {
+    private ResponseEntity<Map<String, Object>> acceptIserveuWebhook(String path, String rawBody, boolean cashpoint) {
         long started = System.currentTimeMillis();
         int bytes = rawBody == null ? 0 : rawBody.length();
-        boolean passAccepted = inbound.iserveuAuthorized(passKey);
-        boolean headerAccepted = headerSecretsMatch(headerSecrets);
         String outcome = "REJECTED";
         String error = null;
         String ack = "{\"status\":1,\"statusDesc\":\"Failure\"}";
-        Map<String, Object> body = Map.of("status", 1, "statusDesc", "Failure");
         try {
-            log.info("ISERVEU_WEBHOOK path={} passAccepted={} headerAccepted={} bytes={}",
-                    path, passAccepted, headerAccepted, bytes);
-            if (!passAccepted || !headerAccepted) {
-                error = "pass_key or header_secrets rejected";
-                return ResponseEntity.ok(body);
-            }
+            log.info("ISERVEU_WEBHOOK path={} bytes={}", path, bytes);
             if (bytes > WebhookInbox.MAX_BODY_BYTES) {
                 error = "body_too_large";
-                return ResponseEntity.ok(body);
+                return ResponseEntity.ok(Map.of("status", 1, "statusDesc", "Failure"));
             }
             if (cashpoint) {
                 inbound.acceptIserveu(rawBody);
@@ -92,23 +74,9 @@ public class WebhookController {
         } finally {
             if (iserveuAudit != null) {
                 iserveuAudit.recordInbound(
-                        path, rawBody, passAccepted, headerAccepted, 200, ack, outcome, error,
-                        System.currentTimeMillis() - started);
+                        path, rawBody, 200, ack, outcome, error, System.currentTimeMillis() - started);
             }
         }
-    }
-
-    private boolean headerSecretsMatch(String provided) {
-        String expected = iserveu.headerSecret();
-        if (expected == null || expected.isBlank()) {
-            return true;
-        }
-        if (provided == null || provided.isBlank()) {
-            return false;
-        }
-        return java.security.MessageDigest.isEqual(
-                expected.getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                provided.trim().getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     @PostMapping("/{provider}")

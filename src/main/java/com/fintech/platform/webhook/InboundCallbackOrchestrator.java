@@ -22,23 +22,13 @@ public class InboundCallbackOrchestrator {
     private static final Logger log = LoggerFactory.getLogger(InboundCallbackOrchestrator.class);
 
     private final WebhookInbox inbox;
-    private final IserveuCallbackAdapter iserveu;
     private final CashoutService cashout;
     private final PayoutService payout;
 
-    public InboundCallbackOrchestrator(
-            WebhookInbox inbox,
-            IserveuCallbackAdapter iserveu,
-            CashoutService cashout,
-            PayoutService payout) {
+    public InboundCallbackOrchestrator(WebhookInbox inbox, CashoutService cashout, PayoutService payout) {
         this.inbox = inbox;
-        this.iserveu = iserveu;
         this.cashout = cashout;
         this.payout = payout;
-    }
-
-    public boolean iserveuAuthorized(String passKey) {
-        return iserveu.passKeyMatches(passKey);
     }
 
     @Transactional

@@ -122,16 +122,13 @@ public class IserveuAuditLogService {
     public void recordInbound(
             String path,
             String rawBody,
-            boolean passAccepted,
-            boolean headerAccepted,
             int httpStatus,
             String ackJson,
             String outcome,
             String errorMessage,
             long latencyMs) {
         String flow = path != null && path.contains("payout") ? "WEBHOOK_PAYOUT" : "WEBHOOK_CASHPOINT";
-        submit(flow, () -> persistInbound(
-                path, flow, rawBody, passAccepted, headerAccepted, httpStatus, ackJson, outcome, errorMessage, latencyMs));
+        submit(flow, () -> persistInbound(path, flow, rawBody, httpStatus, ackJson, outcome, errorMessage, latencyMs));
     }
 
     public List<Map<String, Object>> listForUser(UUID userId, int limit) {
@@ -236,8 +233,6 @@ public class IserveuAuditLogService {
             String path,
             String flow,
             String rawBody,
-            boolean passAccepted,
-            boolean headerAccepted,
             int httpStatus,
             String ackJson,
             String outcome,
@@ -249,8 +244,6 @@ public class IserveuAuditLogService {
         String ref = refFromPlain(safePlain, text(node, "clientRefId"));
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put("Content-Type", "application/json");
-        headers.put("pass_key", passAccepted ? "[ACCEPTED]" : "[REJECTED]");
-        headers.put("header_secrets", headerAccepted ? "[ACCEPTED]" : "[REJECTED]");
         log.info("ISERVEU_WEBHOOK flow={} path={} ref={} outcome={} httpStatus={} latencyMs={}",
                 flow, path, ref, outcome, httpStatus, latencyMs);
         insert(
