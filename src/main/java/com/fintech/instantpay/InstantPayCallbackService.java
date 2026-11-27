@@ -4,8 +4,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fintech.aeps.AepsService;
 import com.fintech.cashout.CashoutService;
+import com.fintech.dmt.DmtCasaLedger;
 import com.fintech.payout.PayoutService;
 import com.fintech.platform.webhook.ProviderCallbackLog;
+import com.fintech.provider.canonical.ProviderModels;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
@@ -48,6 +51,7 @@ public class InstantPayCallbackService {
     private final CashoutService cashoutService;
     private final PayoutService payoutService;
     private final AepsService aepsService;
+    private final DmtCasaLedger dmtCasaLedger;
     private final InstantPayAuditLogService auditLog;
 
     public InstantPayCallbackService(
@@ -58,7 +62,19 @@ public class InstantPayCallbackService {
             CashoutService cashoutService,
             PayoutService payoutService,
             InstantPayAuditLogService auditLog) {
-        this(jdbc, mapper, props, callbackLog, cashoutService, payoutService, null, auditLog);
+        this(jdbc, mapper, props, callbackLog, cashoutService, payoutService, null, null, auditLog);
+    }
+
+    public InstantPayCallbackService(
+            JdbcTemplate jdbc,
+            ObjectMapper mapper,
+            InstantPayProperties props,
+            ProviderCallbackLog callbackLog,
+            CashoutService cashoutService,
+            PayoutService payoutService,
+            AepsService aepsService,
+            InstantPayAuditLogService auditLog) {
+        this(jdbc, mapper, props, callbackLog, cashoutService, payoutService, aepsService, null, auditLog);
     }
 
     @Autowired
@@ -70,6 +86,7 @@ public class InstantPayCallbackService {
             CashoutService cashoutService,
             PayoutService payoutService,
             AepsService aepsService,
+            DmtCasaLedger dmtCasaLedger,
             InstantPayAuditLogService auditLog) {
         this.jdbc = jdbc;
         this.mapper = mapper;
@@ -78,6 +95,7 @@ public class InstantPayCallbackService {
         this.cashoutService = cashoutService;
         this.payoutService = payoutService;
         this.aepsService = aepsService;
+        this.dmtCasaLedger = dmtCasaLedger;
         this.auditLog = auditLog;
     }
 
@@ -125,6 +143,15 @@ public class InstantPayCallbackService {
 
         String serializedPayload = serializeCallbackPayload(merged, rawBody);
         JsonNode payloadNode = parseSafe(serializedPayload);
+
+        String callbackKey = headerIgnoreCase(rawHeaders, "X-Ipay-Callback-Key");
+        boolean isV2Callback = !callbackKey.isEmpty()
+                || (payloadNode.has("statusCode") && payloadNode.has("data") && ipayId.isEmpty() && agentId.isEmpty());
+        if (isV2Callback) {
+            return handleV2JsonCallback(
+                    callId, requestId, method, providedSecret, callbackKey,
+                    payloadNode, serializedPayload, requestUrl, requestPath, rawHeaders, started, occurredAt);
+        }
 
         if (!verifySecret(providedSecret)) {
             Map<String, Object> errBody = new LinkedHashMap<>();
@@ -231,6 +258,21 @@ public class InstantPayCallbackService {
             };
         }
 
+        boolean isDmt = dmtCasaLedger != null && (agentId.startsWith("DMT") || existsInDmt(agentId, ipayId));
+        if (isDmt) {
+            return switch (status) {
+                case "INITIATED", "PENDING" -> null;
+                case "SUCCESS", "PAID", "COMPLETED" -> finalizeDmtCallback(
+                        agentId, ipayId, oprId, "SUCCESS", resCode, nonBlank(resMsg, "DMT Transaction Successful"));
+                case "REFUND", "REVERSED", "FAILED", "DECLINED", "REJECTED" -> finalizeDmtCallback(
+                        agentId, ipayId, oprId, "FAILED", resCode, nonBlank(resMsg, "DMT Transaction Reversed / Failed"));
+                default -> {
+                    log.info("INSTANTPAY_CALLBACK dmt non-terminal status={} agentId={} ipayId={}", status, agentId, ipayId);
+                    yield null;
+                }
+            };
+        }
+
         boolean isPayout = "DR".equals(txnMode)
                 || agentId.startsWith("PO")
                 || (!"CR".equals(txnMode) && existsInPayouts(agentId, ipayId));
@@ -294,6 +336,236 @@ public class InstantPayCallbackService {
             if (c != null && c > 0) return true;
         }
         return false;
+    }
+
+    private boolean existsInDmt(String agentId, String ipayId) {
+        if (!agentId.isEmpty()) {
+            Integer c = jdbc.queryForObject(
+                    "SELECT COUNT(*)::int FROM dmt_transfers WHERE external_ref = ? OR reference_id = ?",
+                    Integer.class, agentId, agentId);
+            if (c != null && c > 0) return true;
+        }
+        if (!ipayId.isEmpty()) {
+            Integer c = jdbc.queryForObject(
+                    "SELECT COUNT(*)::int FROM dmt_transfers WHERE provider_ackno = ?", Integer.class, ipayId);
+            if (c != null && c > 0) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Handles InstantPay v2 JSON callbacks carrying {@code X-Ipay-Callback-Key} (such as {@code EXTA-IFT}
+     * pre-authorization / Portal Test Callback and DMT v2 postbacks), returning InstantPay's required
+     * {@code {"statusCode": "TXN/ERR", "status": "...", "data": {"externalRef": "..."}}} envelope.
+     */
+    private CallbackAck handleV2JsonCallback(
+            String callId,
+            String requestId,
+            String method,
+            String providedSecret,
+            String callbackKey,
+            JsonNode payloadNode,
+            String serializedPayload,
+            String requestUrl,
+            String requestPath,
+            Map<String, String> rawHeaders,
+            long started,
+            Instant occurredAt) {
+        String normKey = callbackKey.isEmpty() ? "V2-JSON" : callbackKey.toUpperCase(Locale.ROOT);
+        String flow = "WEBHOOK_" + normKey.replace('-', '_');
+        String headerOutlet = headerIgnoreCase(rawHeaders, "X-Ipay-Outlet-Id");
+        String traceId = headerIgnoreCase(rawHeaders, "X-Ipay-Trace-Id");
+
+        String v2StatusCode = jsonText(payloadNode, "statusCode", "statuscode").toUpperCase(Locale.ROOT);
+        String v2StatusMsg = jsonText(payloadNode, "status", "message");
+        JsonNode dataNode = payloadNode.path("data");
+        String outletId = nonBlank(jsonText(dataNode, "outletId"), headerOutlet);
+        String remitterMobile = jsonText(dataNode, "remitterMobile", "mobileNumber");
+        String txnValueStr = jsonText(dataNode, "txnValue", "transferAmount", "amount");
+        String dataExtRef = jsonText(dataNode, "externalRef", "agentId");
+        String poolRef = jsonText(dataNode, "poolReferenceId", "ipayId", "orderId");
+        String utr = jsonText(dataNode, "txnReferenceId", "oprId", "utr");
+
+        if (!verifySecret(providedSecret)) {
+            Map<String, Object> errBody = new LinkedHashMap<>();
+            errBody.put("statusCode", "ERR");
+            errBody.put("status", "Unauthorized callback token");
+            errBody.put("data", Map.of());
+            callbackLog.record(PROVIDER, "WEBHOOK", flow, v2StatusCode, outletId, payloadNode, "REJECTED", "invalid_webhook_secret");
+            recordWebhookAudit(callId, requestId, flow, method, requestUrl, requestPath, dataExtRef, poolRef,
+                    rawHeaders, serializedPayload, 401, "ERR", "Unauthorized callback token", errBody,
+                    "invalid_webhook_secret", started, occurredAt);
+            return new CallbackAck(401, errBody);
+        }
+
+        boolean isPreAuth = normKey.startsWith("EXTA")
+                || v2StatusMsg.toLowerCase(Locale.ROOT).contains("pre authorization");
+
+        if (isPreAuth) {
+            String resolvedRef = resolveDmtPreAuthExternalRef(dataExtRef, outletId, remitterMobile, txnValueStr);
+            Map<String, Object> ackBody = new LinkedHashMap<>();
+            ackBody.put("statusCode", "TXN");
+            ackBody.put("status", "Transaction Authorized");
+            ackBody.put("data", Map.of("externalRef", resolvedRef));
+
+            callbackLog.record(PROVIDER, "WEBHOOK", flow, v2StatusCode, outletId, payloadNode, "ACCEPTED", "preauth_authorized");
+            recordWebhookAudit(callId, requestId, flow, method, requestUrl, requestPath, resolvedRef, traceId,
+                    rawHeaders, serializedPayload, 200, "TXN", "Pre-authorization / test callback authorized",
+                    ackBody, null, started, occurredAt);
+            return new CallbackAck(200, ackBody);
+        }
+
+        // Post-transaction v2 status callback
+        String ackRef = !dataExtRef.isEmpty()
+                ? sanitizeAlphanumericRef(dataExtRef)
+                : generateAlphanumericRef();
+        Map<String, Object> ackBody = new LinkedHashMap<>();
+        ackBody.put("statusCode", "TXN");
+        ackBody.put("status", "Callback processed successfully");
+        ackBody.put("data", Map.of("externalRef", ackRef));
+
+        callbackLog.record(PROVIDER, "WEBHOOK", flow, v2StatusCode, outletId, payloadNode, "ACCEPTED", null);
+
+        if (!"TUP".equals(v2StatusCode) && dmtCasaLedger != null && (!dataExtRef.isEmpty() || !poolRef.isEmpty())) {
+            String mappedStatus = switch (v2StatusCode) {
+                case "TXN", "SUCCESS", "COMPLETED" -> "SUCCESS";
+                case "RFD", "REFUND", "REVERSED" -> "REVERSED";
+                case "ERR", "FAILED", "DECLINED", "REJECTED" -> "FAILED";
+                default -> "";
+            };
+            if (!mappedStatus.isEmpty()) {
+                finalizeDmtCallback(dataExtRef, poolRef, utr, mappedStatus, v2StatusCode, v2StatusMsg);
+            }
+        }
+
+        recordWebhookAudit(callId, requestId, flow, method, requestUrl, requestPath, ackRef,
+                !poolRef.isEmpty() ? poolRef : traceId,
+                rawHeaders, serializedPayload, 200, v2StatusCode.isEmpty() ? "TXN" : v2StatusCode,
+                nonBlank(v2StatusMsg, "Callback processed"), ackBody, null, started, occurredAt);
+        return new CallbackAck(200, ackBody);
+    }
+
+    private String resolveDmtPreAuthExternalRef(
+            String incomingExternalRef,
+            String outletId,
+            String remitterMobile,
+            String txnValueStr) {
+        if (!incomingExternalRef.isEmpty()) {
+            return sanitizeAlphanumericRef(incomingExternalRef);
+        }
+        BigDecimal parsedAmt = null;
+        if (!txnValueStr.isEmpty()) {
+            try {
+                parsedAmt = new BigDecimal(txnValueStr);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        if (!outletId.isEmpty()) {
+            if (parsedAmt != null && parsedAmt.compareTo(new BigDecimal("100")) >= 0) {
+                List<String> heldRefs = jdbc.queryForList("""
+                        SELECT t.external_ref
+                          FROM dmt_transfers t
+                          JOIN dmt_senders s ON s.id = t.sender_id
+                         WHERE t.outlet_code = ?
+                           AND t.status IN ('HOLD', 'PENDING')
+                           AND t.amount = ?
+                           AND (? = '' OR s.mobile = ?)
+                           AND t.created_at >= now() - interval '15 minutes'
+                         ORDER BY t.created_at DESC
+                         LIMIT 1
+                        """, String.class, outletId, parsedAmt, remitterMobile, remitterMobile);
+                if (!heldRefs.isEmpty()) {
+                    return sanitizeAlphanumericRef(heldRefs.get(0));
+                }
+            }
+            List<String> ekycRefs = jdbc.queryForList("""
+                    SELECT external_ref
+                      FROM dmt_remitter_onboarding_sessions
+                     WHERE outlet_code = ?
+                       AND (? = '' OR mobile = ?)
+                       AND created_at >= now() - interval '30 minutes'
+                     ORDER BY created_at DESC
+                     LIMIT 1
+                    """, String.class, outletId, remitterMobile, remitterMobile);
+            if (!ekycRefs.isEmpty()) {
+                return sanitizeAlphanumericRef(ekycRefs.get(0));
+            }
+        }
+        return generateAlphanumericRef();
+    }
+
+    private UUID finalizeDmtCallback(
+            String externalRef,
+            String providerTxnId,
+            String utr,
+            String normalizedStatus,
+            String resCode,
+            String resMsg) {
+        if (dmtCasaLedger == null) return null;
+        List<UUID> txnIds = List.of();
+        if (!externalRef.isEmpty()) {
+            txnIds = jdbc.queryForList("""
+                    SELECT transaction_id FROM dmt_transfers
+                     WHERE external_ref = ? OR reference_id = ?
+                     LIMIT 1
+                    """, UUID.class, externalRef, externalRef);
+        }
+        if (txnIds.isEmpty() && !providerTxnId.isEmpty()) {
+            txnIds = jdbc.queryForList("""
+                    SELECT transaction_id FROM dmt_transfers
+                     WHERE provider_ackno = ?
+                     LIMIT 1
+                    """, UUID.class, providerTxnId);
+        }
+        if (txnIds.isEmpty()) {
+            return null;
+        }
+        UUID txnId = txnIds.get(0);
+        ProviderModels.Outcome outcome = "SUCCESS".equals(normalizedStatus)
+                ? ProviderModels.Outcome.SUCCESS
+                : ProviderModels.Outcome.FAILED;
+        dmtCasaLedger.applyStatusReconfirmation(txnId, new ProviderModels.DmtTransferStatus(
+                outcome,
+                false,
+                resCode.isEmpty() ? normalizedStatus : resCode,
+                nonBlank(resMsg, "DMT callback status: " + normalizedStatus),
+                utr,
+                providerTxnId));
+        return txnId;
+    }
+
+    private static String headerIgnoreCase(Map<String, String> headers, String target) {
+        if (headers == null || target == null) return "";
+        for (Map.Entry<String, String> e : headers.entrySet()) {
+            if (e.getKey() != null && e.getKey().equalsIgnoreCase(target) && e.getValue() != null) {
+                return e.getValue().trim();
+            }
+        }
+        return "";
+    }
+
+    private static String jsonText(JsonNode node, String... keys) {
+        if (node == null || node.isMissingNode() || node.isNull()) return "";
+        for (String key : keys) {
+            JsonNode child = node.get(key);
+            if (child != null && !child.isNull()) {
+                String val = child.asText("").trim();
+                if (!val.isEmpty()) return val;
+            }
+        }
+        return "";
+    }
+
+    private static String sanitizeAlphanumericRef(String raw) {
+        String clean = raw == null ? "" : raw.replaceAll("[^A-Za-z0-9]", "");
+        if (clean.length() < 6) {
+            return generateAlphanumericRef();
+        }
+        return clean.length() > 26 ? clean.substring(0, 26) : clean;
+    }
+
+    private static String generateAlphanumericRef() {
+        return "GFP" + System.currentTimeMillis() + String.format("%03d", ThreadLocalRandom.current().nextInt(1000));
     }
 
     private Map<String, String> extractFields(Map<String, String> params, String rawBody) {

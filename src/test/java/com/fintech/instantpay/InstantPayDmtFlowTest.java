@@ -77,6 +77,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
         "app.instantpay.client-secret=e6150d5564de4748b8b59cb4f37570c30991e3b3ae1ef2ec2fe08a34bd45ae68",
         "app.instantpay.encryption-key=253ddc7991d45f00253ddc7991d45f00",
         "app.instantpay.endpoint-ip=223.191.83.103",
+        "app.instantpay.webhook-secret=IPAY_DMT_WEBHOOK_SECRET_999",
         "app.dmt.geofence-enabled=true",
         "app.dmt.max-geofence-km=3.0",
         "app.dmt.default-surcharge-mode=PERCENT",
@@ -509,6 +510,7 @@ class InstantPayDmtFlowTest {
     @Autowired DmtBankListService dmtBankListService;
     @Autowired DmtStatusReconciliationJob dmtReconJob;
     @Autowired TransactionStatusVerificationService verifyStatusService;
+    @Autowired InstantPayCallbackService callbackService;
     @Autowired InstantPayAuditLogService auditLogs;
     @Autowired RetailerBankService retailerBankService;
     @Autowired WalletService walletService;
@@ -623,6 +625,40 @@ class InstantPayDmtFlowTest {
 
         AuthPrincipal retailer = createOnboardedInstantPayRetailer(merchantAadhaar);
         UUID userId = retailer.userId();
+
+        // =====================================================================
+        // 0. InstantPay Portal Test Callback (X-Ipay-Callback-Key: EXTA-IFT)
+        // =====================================================================
+        String portalTestBody = """
+                {
+                  "statusCode": "TXN",
+                  "status": "Pre authorization required to initiate Transaction",
+                  "data": {
+                    "outletId": "782991",
+                    "txnValue": 1,
+                    "remitterMobile": "9650043494"
+                  }
+                }
+                """;
+        InstantPayCallbackService.CallbackAck extaAck = callbackService.handleInbound(
+                "POST",
+                "IPAY_DMT_WEBHOOK_SECRET_999",
+                Map.of(),
+                portalTestBody,
+                "https://gfinpay.com/webhooks/instantpay/callback/IPAY_DMT_WEBHOOK_SECRET_999",
+                "/webhooks/instantpay/callback/IPAY_DMT_WEBHOOK_SECRET_999",
+                Map.of(
+                        "Content-Type", "application/json",
+                        "X-Ipay-Trace-Id", "h000a3534551-bf67-4d09-9058-49ce75",
+                        "X-Ipay-Outlet-Id", "782991",
+                        "X-Ipay-Callback-Key", "EXTA-IFT"));
+        assertEquals(200, extaAck.httpStatus());
+        assertEquals("TXN", extaAck.body().get("statusCode"));
+        assertTrue(String.valueOf(extaAck.body().get("status")).length() > 0);
+        Map<String, Object> extaData = (Map<String, Object>) extaAck.body().get("data");
+        assertNotNull(extaData);
+        String extaRef = String.valueOf(extaData.get("externalRef"));
+        assertTrue(extaRef.matches("^[A-Za-z0-9]{6,30}$"), "EXTA-IFT externalRef must match InstantPay alphanumeric regex");
 
         // =====================================================================
         // 1. Strict Merchant FULL_KYC Gate: PENDING_BIOMETRIC must block DMT
@@ -844,6 +880,29 @@ class InstantPayDmtFlowTest {
         Map<String, Object> throttledRefresh = dmtService.refreshStatus(retailer, tupTxnId);
         assertEquals(Boolean.TRUE, throttledRefresh.get("statusCheckThrottled"));
         assertEquals(0, txnStatusCalls.get());
+
+        // Standard v1 InstantPay Webhook with status=PENDING and res_code=TUP must echo ipay_id and keep transfer PENDING
+        String tupExtRef = String.valueOf(pending500.get("referenceId"));
+        InstantPayCallbackService.CallbackAck pendingCbAck = callbackService.handleInbound(
+                "GET",
+                "IPAY_DMT_WEBHOOK_SECRET_999",
+                Map.of(
+                        "ipay_id", "ORD_DMT_TUP_" + tupExtRef,
+                        "agent_id", tupExtRef,
+                        "opr_id", "",
+                        "status", "PENDING",
+                        "res_code", "TUP",
+                        "res_msg", "Response Timedout please contact help desk #E1",
+                        "txn_mode", "DR"),
+                "",
+                "https://gfinpay.com/webhooks/instantpay/callback/IPAY_DMT_WEBHOOK_SECRET_999",
+                "/webhooks/instantpay/callback/IPAY_DMT_WEBHOOK_SECRET_999",
+                Map.of());
+        assertEquals(200, pendingCbAck.httpStatus());
+        assertEquals("ORD_DMT_TUP_" + tupExtRef, pendingCbAck.body().get("ipay_id"));
+        assertEquals(Boolean.TRUE, pendingCbAck.body().get("success"));
+        assertEquals("callback called successfully", pendingCbAck.body().get("description"));
+        assertEquals("PENDING", dmtService.status(retailer, tupTxnId).get("state"));
 
         // verifyForDesk also respects 30m cooling window (force = false)
         Map<String, Object> deskVerifyThrottled = verifyStatusService.verifyForDesk(retailer, tupTxnId);
