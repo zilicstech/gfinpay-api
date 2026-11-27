@@ -1,5 +1,6 @@
 package com.fintech.identity;
 
+import com.fintech.dmt.DmtProperties;
 import com.fintech.finance.FinanceService;
 import com.fintech.ledger.LedgerService;
 import com.fintech.ledger.TransactionService;
@@ -57,6 +58,14 @@ public class AdminPlatformService {
     private final PlatformServiceRepository platformServices;
     private final AgentKycProfileRepository kycProfiles;
     private final JourneyTracker journeyTracker;
+    private DmtProperties dmtProps = new DmtProperties();
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setDmtProperties(DmtProperties dmtProps) {
+        if (dmtProps != null) {
+            this.dmtProps = dmtProps;
+        }
+    }
 
     public AdminPlatformService(JdbcTemplate jdbc, PasswordEncoder passwordEncoder, WalletService walletService,
                                 LedgerService ledgerService, TransactionService transactionService,
@@ -403,6 +412,13 @@ public class AdminPlatformService {
     @Transactional
     public Map<String, Object> saveCommission(String serviceCode, String mode, BigDecimal retailer,
                                               BigDecimal distributor, BigDecimal hub, BigDecimal vendorCommission) {
+        return saveCommission(serviceCode, mode, retailer, distributor, hub, vendorCommission, null, null, null);
+    }
+
+    @Transactional
+    public Map<String, Object> saveCommission(String serviceCode, String mode, BigDecimal retailer,
+                                              BigDecimal distributor, BigDecimal hub, BigDecimal vendorCommission,
+                                              String surchargeModeRaw, BigDecimal surchargeValueRaw, BigDecimal surchargeMinRaw) {
         access.requireSuperAdminOrPlatformAdmin();
         String kind = mode == null ? "" : mode.trim().toUpperCase();
         if (!"FLAT".equals(kind) && !"PERCENT".equals(kind)) {
@@ -417,6 +433,27 @@ public class AdminPlatformService {
             throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_COMMISSION", "A percentage cannot be more than 100");
         }
         String txnType = commissionTxnType(serviceCode);
+        boolean isDmt = "DMT".equalsIgnoreCase(txnType);
+        String surchargeType = null;
+        BigDecimal surchargeVal = null;
+        BigDecimal surchargeMin = null;
+        if (isDmt && (surchargeModeRaw != null || surchargeValueRaw != null || surchargeMinRaw != null)) {
+            surchargeType = (surchargeModeRaw == null || surchargeModeRaw.isBlank())
+                    ? dmtProps.defaultSurchargeMode()
+                    : surchargeModeRaw.trim().toUpperCase(Locale.ROOT);
+            if (!"FLAT".equals(surchargeType) && !"PERCENT".equals(surchargeType)) {
+                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_SURCHARGE",
+                        "Surcharge mode must be FLAT or PERCENT");
+            }
+            surchargeVal = surchargeValueRaw != null ? nonNegative(surchargeValueRaw) : dmtProps.defaultSurchargeValue();
+            if ("PERCENT".equals(surchargeType) && surchargeVal.compareTo(new BigDecimal("100")) > 0) {
+                throw ApiException.of(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_SURCHARGE",
+                        "Surcharge percentage cannot exceed 100%");
+            }
+            surchargeMin = "PERCENT".equals(surchargeType)
+                    ? (surchargeMinRaw != null ? nonNegative(surchargeMinRaw) : BigDecimal.ZERO)
+                    : BigDecimal.ZERO;
+        }
         BigDecimal retailerPct = "PERCENT".equals(kind) ? retailerValue : BigDecimal.ZERO;
         BigDecimal distributorPct = "PERCENT".equals(kind) ? distributorValue : BigDecimal.ZERO;
         BigDecimal hubPct = "PERCENT".equals(kind) ? hubValue : BigDecimal.ZERO;
@@ -426,19 +463,26 @@ public class AdminPlatformService {
         int updated = jdbc.update("""
                 UPDATE commission_rules
                    SET commission_type = ?, retailer_amount = ?, distributor_amount = ?, hub_amount = ?,
-                       retailer_share_pct = ?, distributor_share_pct = ?, hub_share_pct = ?, platform_share_pct = 0
+                       retailer_share_pct = ?, distributor_share_pct = ?, hub_share_pct = ?, platform_share_pct = 0,
+                       surcharge_type = COALESCE(?, surcharge_type),
+                       surcharge_value = COALESCE(?, surcharge_value),
+                       surcharge_min = COALESCE(?, surcharge_min)
                  WHERE txn_type = ? AND effective_to IS NULL
                 """, kind, retailerAmount, distributorAmount, hubAmount,
-                retailerPct, distributorPct, hubPct, txnType);
+                retailerPct, distributorPct, hubPct,
+                surchargeType, surchargeVal, surchargeMin,
+                txnType);
         if (updated == 0) {
             jdbc.update("""
                     INSERT INTO commission_rules
                         (id, txn_type, slab_min, slab_max, total_rate_bp, flat_fee,
                          retailer_share_pct, distributor_share_pct, platform_share_pct, hub_share_pct,
-                         commission_type, retailer_amount, distributor_amount, hub_amount, effective_from)
-                    VALUES (?, ?, 0, 999999999, 0, NULL, ?, ?, 0, ?, ?, ?, ?, ?, now())
+                         commission_type, retailer_amount, distributor_amount, hub_amount,
+                         surcharge_type, surcharge_value, surcharge_min, effective_from)
+                    VALUES (?, ?, 0, 999999999, 0, NULL, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, now())
                     """, UUID.randomUUID(), txnType, retailerPct, distributorPct, hubPct,
-                    kind, retailerAmount, distributorAmount, hubAmount);
+                    kind, retailerAmount, distributorAmount, hubAmount,
+                    surchargeType, surchargeVal, surchargeMin);
         }
         if ("HOSPI_CASH".equalsIgnoreCase(serviceCode) && vendorCommission != null) {
             BigDecimal vendor = nonNegative(vendorCommission).setScale(2, RoundingMode.HALF_UP);
@@ -448,8 +492,8 @@ public class AdminPlatformService {
                      WHERE id IS TRUE
                     """, vendor);
         }
-        log.info("COMMISSION_SET service={} type={} mode={} retailer={} distributor={} hub={}",
-                serviceCode, txnType, kind, retailerValue, distributorValue, hubValue);
+        log.info("COMMISSION_SET service={} type={} mode={} retailer={} distributor={} hub={} surchargeType={} surchargeVal={} surchargeMin={}",
+                serviceCode, txnType, kind, retailerValue, distributorValue, hubValue, surchargeType, surchargeVal, surchargeMin);
         return commissionView(serviceCode);
     }
 
@@ -457,7 +501,8 @@ public class AdminPlatformService {
         String txnType = commissionTxnType(serviceCode);
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 SELECT commission_type, retailer_amount, distributor_amount, hub_amount,
-                       retailer_share_pct, distributor_share_pct, hub_share_pct
+                       retailer_share_pct, distributor_share_pct, hub_share_pct,
+                       surcharge_type, surcharge_value, surcharge_min
                   FROM commission_rules
                  WHERE txn_type = ? AND effective_to IS NULL
                  ORDER BY effective_from DESC
@@ -472,6 +517,7 @@ public class AdminPlatformService {
             out.put("distributor", BigDecimal.ZERO);
             out.put("hub", BigDecimal.ZERO);
             attachVendorCommission(serviceCode, out);
+            attachDmtSurcharge(txnType, null, out);
             return out;
         }
         Map<String, Object> row = rows.get(0);
@@ -481,7 +527,28 @@ public class AdminPlatformService {
         out.put("distributor", valueOf(percent ? row.get("distributor_share_pct") : row.get("distributor_amount")));
         out.put("hub", valueOf(percent ? row.get("hub_share_pct") : row.get("hub_amount")));
         attachVendorCommission(serviceCode, out);
+        attachDmtSurcharge(txnType, row, out);
         return out;
+    }
+
+    private void attachDmtSurcharge(String txnType, Map<String, Object> row, Map<String, Object> out) {
+        if (!"DMT".equalsIgnoreCase(txnType)) {
+            return;
+        }
+        Object rawMode = row != null ? row.get("surcharge_type") : null;
+        Object rawVal = row != null ? row.get("surcharge_value") : null;
+        Object rawMin = row != null ? row.get("surcharge_min") : null;
+        boolean customized = rawMode != null && !String.valueOf(rawMode).isBlank() && rawVal instanceof BigDecimal;
+        out.put("surchargeMode", customized
+                ? ("FLAT".equalsIgnoreCase(String.valueOf(rawMode)) ? "FLAT" : "PERCENT")
+                : dmtProps.defaultSurchargeMode());
+        out.put("surchargeValue", customized
+                ? ((BigDecimal) rawVal).setScale(2, RoundingMode.HALF_UP)
+                : dmtProps.defaultSurchargeValue());
+        out.put("surchargeMin", customized && rawMin instanceof BigDecimal m
+                ? m.setScale(2, RoundingMode.HALF_UP)
+                : dmtProps.defaultSurchargeMin());
+        out.put("surchargeCustomized", customized);
     }
 
     private void attachVendorCommission(String serviceCode, Map<String, Object> out) {

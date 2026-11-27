@@ -1,5 +1,6 @@
 package com.fintech.dmt;
 
+import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -8,6 +9,7 @@ import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -22,7 +24,7 @@ import org.springframework.web.multipart.MultipartFile;
 @RequestMapping("/api/v1/admin/dmt-banks")
 public class DmtBankAdminController {
 
-    public record CreateBankRequest(@NotBlank String bankId, @NotBlank String bankName) {}
+    public record CreateBankRequest(@NotBlank String bankId, @NotBlank String bankName, String ifscGlobal) {}
 
     public record ActiveRequest(@NotNull Boolean active) {}
 
@@ -44,7 +46,13 @@ public class DmtBankAdminController {
     @PostMapping
     @PreAuthorize("hasAuthority('settings.manage')")
     public ApiResponse<Map<String, Object>> create(@Valid @RequestBody CreateBankRequest req) {
-        return ApiResponse.ok(banks.create(req.bankId(), req.bankName()));
+        return ApiResponse.ok(banks.create(req.bankId(), req.bankName(), req.ifscGlobal()));
+    }
+
+    @PostMapping("/sync")
+    @PreAuthorize("hasAuthority('settings.manage')")
+    public ApiResponse<Map<String, Object>> sync(@AuthenticationPrincipal AuthPrincipal me) {
+        return ApiResponse.ok(banks.syncFromAdmin(me != null ? me.userId() : null));
     }
 
     @PatchMapping("/{id}")

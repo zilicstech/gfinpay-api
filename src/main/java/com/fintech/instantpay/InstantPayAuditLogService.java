@@ -43,6 +43,8 @@ public class InstantPayAuditLogService {
             "encryptedaadhaar",
             "piddata",
             "sessionkey",
+            "skey",
+            "referencekey",
             "hmac",
             "mc",
             "otp",
@@ -52,6 +54,7 @@ public class InstantPayAuditLogService {
     private static final Set<String> MASKED_LAST4_KEYS = Set.of(
             "bankaccountno",
             "accountnumber",
+            "beneficiaryaccount",
             "pan"
     );
 
@@ -257,10 +260,16 @@ public class InstantPayAuditLogService {
                         UNION
                         SELECT a.external_ref FROM aeps_transactions a
                          WHERE a.user_id = ? AND a.external_ref IS NOT NULL
+                        UNION
+                        SELECT d.external_ref FROM dmt_transfers d
+                         WHERE d.agent_user_id = ? AND d.external_ref IS NOT NULL
+                        UNION
+                        SELECT r.external_ref FROM dmt_remitter_onboarding_sessions r
+                         WHERE r.agent_user_id = ? AND r.external_ref IS NOT NULL
                     ))
                  ORDER BY l.created_at DESC
                  LIMIT ?
-                """, userId, userId, userId, userId, userId, safeLimit);
+                """, userId, userId, userId, userId, userId, userId, userId, safeLimit);
         return rows.stream().map(this::toView).toList();
     }
 
@@ -356,12 +365,14 @@ public class InstantPayAuditLogService {
             while (names.hasNext()) {
                 keys.add(names.next());
             }
+            boolean looksLikeBeneficiaryObj = obj.has("ifsc") && obj.has("account");
             for (String key : keys) {
                 String norm = key.replaceAll("[^A-Za-z0-9]", "").toLowerCase(Locale.ROOT);
                 JsonNode child = obj.get(key);
                 if (REDACTED_BODY_KEYS.contains(norm)) {
                     obj.put(key, "[REDACTED]");
-                } else if (MASKED_LAST4_KEYS.contains(norm) && child != null && child.isTextual()) {
+                } else if ((MASKED_LAST4_KEYS.contains(norm) || (looksLikeBeneficiaryObj && "account".equals(norm)))
+                        && child != null && child.isTextual()) {
                     String val = child.asText("");
                     obj.put(key, val.length() > 4 ? "••••" + val.substring(val.length() - 4) : "••••");
                 } else {

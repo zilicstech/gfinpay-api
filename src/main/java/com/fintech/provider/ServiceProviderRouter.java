@@ -28,9 +28,10 @@ public class ServiceProviderRouter {
     public static final String UPI_CASHOUT = "UPI_CASHOUT";
     public static final String AEPS = "AEPS";
     public static final String PAYOUT = "PAYOUT";
+    public static final String DMT = "DMT";
 
     private static final Set<String> VALID_STRATEGIES = Set.of("ROUND_ROBIN", "PRIMARY_FALLBACK");
-    private static final Set<String> VALID_SERVICES = Set.of(UPI_CASHOUT, AEPS, PAYOUT);
+    private static final Set<String> VALID_SERVICES = Set.of(UPI_CASHOUT, AEPS, PAYOUT, DMT);
 
     public record RoutedChannel(
             UUID channelId,
@@ -96,10 +97,19 @@ public class ServiceProviderRouter {
             case UPI_CASHOUT -> "c.supports_upi_cashout";
             case AEPS -> "c.supports_aeps";
             case PAYOUT -> "c.supports_payout";
+            case DMT -> "c.supports_dmt";
             default -> throw new IllegalArgumentException("Unsupported service: " + svc);
         };
 
         String emeraldFilter = isEmeraldEnabled() ? "" : " AND c.provider_code <> 'EMERALD' ";
+        String kycPredicate = DMT.equals(svc)
+                ? " a.kyc_status = 'FULL_KYC' "
+                : """
+                    (
+                         a.kyc_status = 'FULL_KYC'
+                         OR (c.biometric_required = FALSE AND a.kyc_status = 'NOT_REQUIRED')
+                    )
+                  """;
 
         List<Map<String, Object>> candidates = jdbc.queryForList("""
                 SELECT c.id AS channel_id,
@@ -121,10 +131,7 @@ public class ServiceProviderRouter {
                    AND a.enabled_for_retailer = TRUE
                    AND a.onboarding_status IN ('ONBOARDED', 'ACTIVE')
                    AND a.retailer_priority BETWEEN 1 AND 3
-                   AND (
-                        a.kyc_status = 'FULL_KYC'
-                        OR (c.biometric_required = FALSE AND a.kyc_status = 'NOT_REQUIRED')
-                   )
+                   AND """ + kycPredicate + """
                    AND c.active = TRUE
                    AND m.status = 'ACTIVE'
                    """ + emeraldFilter + """
@@ -141,15 +148,19 @@ public class ServiceProviderRouter {
                      WHERE a.user_id = ?
                        AND a.enabled_for_retailer = TRUE
                        AND c.active = TRUE
-                       AND c.biometric_required = TRUE
+                       AND (c.biometric_required = TRUE OR ? = 'DMT')
                        AND a.kyc_status <> 'FULL_KYC'
-                    """, Integer.class, userId);
+                    """, Integer.class, userId, svc);
             if (pendingBiometric != null && pendingBiometric > 0) {
                 throw ApiException.of(HttpStatus.FORBIDDEN, "BIOMETRIC_KYC_REQUIRED",
-                        "Complete your merchant biometric verification to activate cash and settlement services.");
+                        DMT.equals(svc)
+                                ? "Complete your merchant Full KYC biometric verification to unlock Domestic Money Transfer."
+                                : "Complete your merchant biometric verification to activate cash and settlement services.");
             }
             throw ApiException.of(HttpStatus.FORBIDDEN, "SERVICE_NOT_ACTIVATED",
-                    "Your merchant cash terminal is pending activation. Please contact support.");
+                    DMT.equals(svc)
+                            ? "Your Domestic Money Transfer terminal is pending activation. Please contact support."
+                            : "Your merchant cash terminal is pending activation. Please contact support.");
         }
 
         String strategy = String.valueOf(policy.getOrDefault("strategy", "ROUND_ROBIN")).toUpperCase(Locale.ROOT);
@@ -157,9 +168,9 @@ public class ServiceProviderRouter {
         return toRoutedChannel(choose(svc, candidates, strategy, counter));
     }
 
-    /** UPI and payout always take the first row, which is the lowest retailer priority. */
+    /** UPI, payout, and DMT always take the first row, which is the lowest retailer priority. */
     static Map<String, Object> choose(String service, List<Map<String, Object>> orderedByPriority, String strategy, long counter) {
-        boolean retailerOrder = UPI_CASHOUT.equals(service) || PAYOUT.equals(service);
+        boolean retailerOrder = UPI_CASHOUT.equals(service) || PAYOUT.equals(service) || DMT.equals(service);
         if (!retailerOrder && "ROUND_ROBIN".equals(strategy) && orderedByPriority.size() > 1) {
             return orderedByPriority.get((int) Math.floorMod(counter, orderedByPriority.size()));
         }
@@ -214,7 +225,7 @@ public class ServiceProviderRouter {
         String whereClause = isEmeraldEnabled() ? "" : " WHERE c.provider_code <> 'EMERALD' ";
         List<Map<String, Object>> channels = jdbc.queryForList("""
                 SELECT c.id, c.channel_key, c.provider_code, c.pipe_code, c.display_label,
-                       c.supports_upi_cashout, c.supports_aeps, c.supports_payout,
+                       c.supports_upi_cashout, c.supports_aeps, c.supports_payout, c.supports_dmt,
                        c.biometric_required, c.active, c.priority_order, c.updated_at,
                        (SELECT COUNT(*)::int FROM provider_pipe_activations a WHERE a.channel_id = c.id) AS onboarded_count,
                        (SELECT COUNT(*)::int FROM provider_pipe_activations a WHERE a.channel_id = c.id AND a.kyc_status = 'FULL_KYC') AS full_kyc_count

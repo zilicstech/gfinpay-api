@@ -136,10 +136,11 @@ public class BiometricActivationService {
         boolean emeraldEnabled = emeraldProps == null || emeraldProps.enabled();
         boolean upiServiceEnabled = platformServices == null || platformServices.isEnabled(PlatformServiceGate.UPI_CASHOUT);
         boolean aepsServiceEnabled = platformServices == null || platformServices.isEnabled(PlatformServiceGate.AEPS);
+        boolean dmtServiceEnabled = platformServices == null || platformServices.isEnabled(PlatformServiceGate.DMT);
 
         List<Map<String, Object>> activations = jdbc.queryForList("""
                 SELECT a.id, c.channel_key, c.provider_code,
-                       c.supports_upi_cashout, c.supports_aeps, c.supports_payout,
+                       c.supports_upi_cashout, c.supports_aeps, c.supports_payout, c.supports_dmt,
                        c.biometric_required,
                        a.onboarding_status, a.kyc_status, a.biometric_verified_at, a.bank_sync_status,
                        a.enabled_for_retailer, c.active AS platform_active, c.priority_order
@@ -157,16 +158,20 @@ public class BiometricActivationService {
         boolean terminalProvisioned = !activations.isEmpty();
         boolean upiTerminalProvisioned = false;
         boolean aepsTerminalProvisioned = false;
+        boolean dmtTerminalProvisioned = false;
         boolean anyFullKyc = false;
         boolean anyPendingBiometric = false;
         boolean upiPendingBiometric = false;
         boolean aepsPendingBiometric = false;
+        boolean dmtPendingBiometric = false;
         boolean upiCashoutActive = false;
         boolean aepsActive = false;
+        boolean dmtActive = false;
         boolean payoutBankReady = false;
         String defaultPendingChannelKey = null;
         String upiPendingChannelKey = null;
         String aepsPendingChannelKey = null;
+        String dmtPendingChannelKey = null;
 
         List<Map<String, Object>> opaqueChannels = new ArrayList<>();
         int index = 1;
@@ -178,14 +183,17 @@ public class BiometricActivationService {
             boolean biometricNeeded = Boolean.TRUE.equals(row.get("biometric_required"));
             boolean supportsUpi = Boolean.TRUE.equals(row.get("supports_upi_cashout"));
             boolean supportsAeps = Boolean.TRUE.equals(row.get("supports_aeps"));
+            boolean supportsDmt = Boolean.TRUE.equals(row.get("supports_dmt"));
             boolean isFull = "FULL_KYC".equalsIgnoreCase(kycStatus);
             boolean readyWithoutBiometric = !biometricNeeded && "NOT_REQUIRED".equalsIgnoreCase(kycStatus);
 
             if (supportsUpi) upiTerminalProvisioned = true;
             if (supportsAeps) aepsTerminalProvisioned = true;
+            if (supportsDmt) dmtTerminalProvisioned = true;
 
             if (isFull) {
                 anyFullKyc = true;
+                if (supportsDmt) dmtActive = true;
             }
             if (isFull || readyWithoutBiometric) {
                 if (supportsUpi) upiCashoutActive = true;
@@ -193,7 +201,12 @@ public class BiometricActivationService {
                 if (isFull && Boolean.TRUE.equals(row.get("supports_payout")) && "SYNCED".equalsIgnoreCase(bankSync)) {
                     payoutBankReady = true;
                 }
-            } else if (biometricNeeded) {
+            }
+            if (!isFull && supportsDmt) {
+                dmtPendingBiometric = true;
+                if (dmtPendingChannelKey == null) dmtPendingChannelKey = key;
+            }
+            if (!isFull && !readyWithoutBiometric && biometricNeeded) {
                 anyPendingBiometric = true;
                 if (defaultPendingChannelKey == null) {
                     defaultPendingChannelKey = key;
@@ -223,6 +236,7 @@ public class BiometricActivationService {
 
         boolean effectiveUpiActive = servicesUnlocked && upiServiceEnabled && upiCashoutActive;
         boolean effectiveAepsActive = servicesUnlocked && aepsServiceEnabled && aepsActive;
+        boolean effectiveDmtActive = servicesUnlocked && dmtServiceEnabled && dmtActive;
         boolean cashServicesActive = servicesUnlocked && (anyFullKyc || upiCashoutActive);
 
         Map<String, Object> out = new LinkedHashMap<>();
@@ -231,23 +245,28 @@ public class BiometricActivationService {
         out.put("agreementSigned", agreementSigned);
         out.put("upiServiceEnabled", upiServiceEnabled);
         out.put("aepsServiceEnabled", aepsServiceEnabled);
+        out.put("dmtServiceEnabled", dmtServiceEnabled);
         out.put("terminalProvisioned", terminalProvisioned);
         out.put("upiTerminalProvisioned", upiTerminalProvisioned);
         out.put("aepsTerminalProvisioned", aepsTerminalProvisioned);
+        out.put("dmtTerminalProvisioned", dmtTerminalProvisioned);
         out.put("biometricRequired", terminalProvisioned && anyPendingBiometric && !upiCashoutActive && !aepsActive);
         out.put("upiBiometricRequired", upiTerminalProvisioned && upiPendingBiometric && !upiCashoutActive);
         out.put("aepsBiometricRequired", aepsTerminalProvisioned && aepsPendingBiometric && !aepsActive);
+        out.put("dmtBiometricRequired", dmtTerminalProvisioned && dmtPendingBiometric && !dmtActive);
         out.put("additionalBiometricAvailable", (anyFullKyc || upiCashoutActive) && anyPendingBiometric);
         out.put("biometricVerified", anyFullKyc);
         out.put("cashServicesActive", cashServicesActive);
         out.put("upiCashoutActive", effectiveUpiActive);
         out.put("aepsActive", effectiveAepsActive);
+        out.put("dmtActive", effectiveDmtActive);
         out.put("payoutBankReady", servicesUnlocked && payoutBankReady);
         out.put("hasFullAadhaar", hasFullAadhaar);
         out.put("aadhaarLast4", aadhaarLast4);
         out.put("pendingChannelKey", defaultPendingChannelKey);
         out.put("upiPendingChannelKey", upiPendingChannelKey != null ? upiPendingChannelKey : defaultPendingChannelKey);
         out.put("aepsPendingChannelKey", aepsPendingChannelKey != null ? aepsPendingChannelKey : defaultPendingChannelKey);
+        out.put("dmtPendingChannelKey", dmtPendingChannelKey != null ? dmtPendingChannelKey : defaultPendingChannelKey);
         out.put("rdEnv", rdEnv);
         out.put("allowPastedPid", allowPastedPid);
         out.put("channels", opaqueChannels);

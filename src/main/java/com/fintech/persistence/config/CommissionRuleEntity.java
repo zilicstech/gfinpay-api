@@ -48,6 +48,15 @@ public class CommissionRuleEntity {
     @Column(name = "distributor_amount")
     private BigDecimal distributorAmount;
 
+    @Column(name = "surcharge_type", columnDefinition = "text")
+    private String surchargeType;
+
+    @Column(name = "surcharge_value")
+    private BigDecimal surchargeValue;
+
+    @Column(name = "surcharge_min")
+    private BigDecimal surchargeMin;
+
     @Column(name = "effective_from", nullable = false)
     private OffsetDateTime effectiveFrom;
 

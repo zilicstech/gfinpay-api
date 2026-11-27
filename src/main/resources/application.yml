@@ -137,6 +137,19 @@ app:
     payout-include-outlet-id: ${APP_INSTANTPAY_PAYOUT_INCLUDE_OUTLET_ID:true}
     webhook-secret: ${APP_INSTANTPAY_WEBHOOK_SECRET:}
     aeps-bank-cache-minutes: ${APP_INSTANTPAY_AEPS_BANK_CACHE_MINUTES:30}
+    dmt-bank-cache-minutes: ${APP_INSTANTPAY_DMT_BANK_CACHE_MINUTES:60}
+  dmt:
+    min-amount: ${APP_DMT_MIN_AMOUNT:100}
+    max-per-txn: ${APP_DMT_MAX_PER_TXN:5000}
+    default-surcharge-mode: ${APP_DMT_DEFAULT_SURCHARGE_MODE:PERCENT}
+    default-surcharge-value: ${APP_DMT_DEFAULT_SURCHARGE_VALUE:1.00}
+    default-surcharge-min: ${APP_DMT_DEFAULT_SURCHARGE_MIN:10.00}
+    geofence-enabled: ${APP_DMT_GEOFENCE_ENABLED:true}
+    max-geofence-km: ${APP_DMT_MAX_GEOFENCE_KM:3.0}
+    status-initial-delay-minutes: ${APP_DMT_STATUS_INITIAL_DELAY_MINUTES:30}
+    status-poll-interval-minutes: ${APP_DMT_STATUS_POLL_INTERVAL_MINUTES:240}
+    recon-enabled: ${APP_DMT_RECON_ENABLED:true}
+    recon-sweep-ms: ${APP_DMT_RECON_SWEEP_MS:300000}
   aeps:
     geofence-enabled: ${APP_AEPS_GEOFENCE_ENABLED:true}
     max-geofence-km: ${APP_AEPS_MAX_GEOFENCE_KM:3.0}

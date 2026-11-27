@@ -989,6 +989,7 @@ public class ProviderOnboardingService {
                        c.supports_upi_cashout,
                        c.supports_aeps,
                        c.supports_payout,
+                       c.supports_dmt,
                        c.biometric_required,
                        c.priority_order,
                        (a.id IS NOT NULL) AS onboarded,
@@ -1069,6 +1070,7 @@ public class ProviderOnboardingService {
                         (target.supports_upi_cashout AND c.supports_upi_cashout)
                      OR (target.supports_aeps AND c.supports_aeps)
                      OR (target.supports_payout AND c.supports_payout)
+                     OR (target.supports_dmt AND c.supports_dmt)
                    )
                 """, Integer.class, channelId, userId, channelId, priority);
         return count != null && count > 0;
@@ -1203,9 +1205,9 @@ public class ProviderOnboardingService {
         UUID id = UUID.fromString("e1000000-0000-0000-0000-000000000042");
         jdbc.update("""
                 INSERT INTO service_provider_channels
-                    (id, channel_key, provider_code, pipe_code, display_label, priority_order, config_json)
-                VALUES (?, 'ch_instantpay_direct', ?, 'DIRECT', 'InstantPay · Direct', 2,
-                        '{"spkey":"WAP","gw":"JA","upiCashout":{"min":100,"max":5000,"step":100}}'::jsonb)
+                    (id, channel_key, provider_code, pipe_code, display_label, supports_dmt, priority_order, config_json)
+                VALUES (?, 'ch_instantpay_direct', ?, 'DIRECT', 'InstantPay · Direct', TRUE, 2,
+                        '{"spkey":"WAP","gw":"JA","upiCashout":{"min":100,"max":5000,"step":100},"dmt":{"min":100,"maxPerTxn":5000,"monthlyLimit":25000}}'::jsonb)
                 ON CONFLICT (provider_code, pipe_code) DO NOTHING
                 """, id, PROVIDER_INSTANTPAY);
         return jdbc.queryForObject(

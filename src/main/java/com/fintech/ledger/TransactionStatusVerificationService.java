@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fintech.aeps.AepsService;
 import com.fintech.cashout.CashoutService;
 import com.fintech.dmt.DmtCasaLedger;
+import com.fintech.dmt.DmtCasaService;
 import com.fintech.emerald.EmeraldCallbackService;
 import com.fintech.identity.AdminPlatformService;
 import com.fintech.identity.DeskService;
@@ -50,6 +51,12 @@ public class TransactionStatusVerificationService {
     private final TransactionService transactionService;
     private final WalletService walletService;
     private final LedgerService ledgerService;
+    private DmtCasaService dmtCasaService;
+
+    @Autowired(required = false)
+    public void setDmtCasaService(DmtCasaService dmtCasaService) {
+        this.dmtCasaService = dmtCasaService;
+    }
 
     @Autowired
     public TransactionStatusVerificationService(
@@ -113,7 +120,7 @@ public class TransactionStatusVerificationService {
         String previousState = str(before.get("state"));
         String txnType = str(before.get("txn_type"));
 
-        reconcileTransaction(txnId, txnType, previousState);
+        String customMessage = reconcileTransaction(txnId, txnType, previousState, false);
 
         Map<String, Object> after = deskService.getTransaction(me, txnId);
         String currentState = str(after.get("state"));
@@ -125,7 +132,7 @@ public class TransactionStatusVerificationService {
         out.put("currentState", currentState);
         out.put("changed", changed);
         out.put("verifiedAt", Instant.now());
-        out.put("message", buildSummaryMessage(currentState, changed));
+        out.put("message", (!changed && customMessage != null) ? customMessage : buildSummaryMessage(currentState, changed));
         return out;
     }
 
@@ -135,7 +142,7 @@ public class TransactionStatusVerificationService {
         String previousState = str(before.get("state"));
         String txnType = str(before.get("txn_type"));
 
-        reconcileTransaction(txnId, txnType, previousState);
+        String customMessage = reconcileTransaction(txnId, txnType, previousState, true);
 
         Map<String, Object> after = adminService.getTransaction(txnId);
         String currentState = str(after.get("state"));
@@ -151,7 +158,7 @@ public class TransactionStatusVerificationService {
         out.put("changed", changed);
         out.put("verifiedAt", Instant.now());
         out.put("callbacks", matchingCallbacks);
-        out.put("message", buildSummaryMessage(currentState, changed));
+        out.put("message", (!changed && customMessage != null) ? customMessage : buildSummaryMessage(currentState, changed));
         return out;
     }
 
@@ -294,7 +301,7 @@ public class TransactionStatusVerificationService {
         }
     }
 
-    private void reconcileTransaction(UUID txnId, String txnType, String currentState) {
+    private String reconcileTransaction(UUID txnId, String txnType, String currentState, boolean forceAdmin) {
         List<String> refs = collectSearchRefs(txnId, null);
 
         // 1. Replay any received provider callback in case async processing was missed
@@ -328,7 +335,18 @@ public class TransactionStatusVerificationService {
         } else if (("CASHOUT_AEPS".equalsIgnoreCase(txnType) || "AEPS_DEPOSIT".equalsIgnoreCase(txnType))
                 && aepsService != null) {
             aepsService.reconcileByTransactionId(txnId);
+        } else if ("DMT".equalsIgnoreCase(txnType) && dmtCasaService != null) {
+            Map<String, Object> dmtRes = dmtCasaService.reconcileByTransactionId(txnId, forceAdmin);
+            if (dmtRes != null) {
+                if (Boolean.TRUE.equals(dmtRes.get("statusCheckThrottled")) && dmtRes.get("statusCheckMessage") != null) {
+                    return String.valueOf(dmtRes.get("statusCheckMessage"));
+                }
+                if (dmtRes.get("reconfirmedAt") != null && "SUCCESS".equalsIgnoreCase(str(dmtRes.get("state")))) {
+                    return "DMT settlement reconfirmed with the bank.";
+                }
+            }
         }
+        return null;
     }
 
     private List<String> collectSearchRefs(UUID txnId, String existingPartnerRef) {
@@ -363,6 +381,14 @@ public class TransactionStatusVerificationService {
             addIfPresent(refs, r.get("provider_txn_id"));
         });
 
+        jdbc.queryForList("""
+                SELECT external_ref, reference_id, provider_ackno FROM dmt_transfers WHERE transaction_id = ?
+                """, txnId).forEach(r -> {
+            addIfPresent(refs, r.get("external_ref"));
+            addIfPresent(refs, r.get("reference_id"));
+            addIfPresent(refs, r.get("provider_ackno"));
+        });
+
         return refs.stream().distinct().toList();
     }
 
@@ -373,10 +399,10 @@ public class TransactionStatusVerificationService {
         List<Map<String, Object>> out = new ArrayList<>();
         for (String ref : refs) {
             List<Map<String, Object>> rows = jdbc.queryForList("""
-                    SELECT id, provider, event, status, merchant_code, outcome, created_at
+                    SELECT id, provider, event, status, merchant_code, outcome, received_at AS created_at
                       FROM provider_callbacks
                      WHERE payload->>'externalRef' = ? OR payload->>'txnId' = ?
-                     ORDER BY id DESC
+                     ORDER BY received_at DESC
                      LIMIT 5
                     """, ref, ref);
             out.addAll(rows);

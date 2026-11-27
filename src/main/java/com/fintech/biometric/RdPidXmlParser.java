@@ -156,6 +156,28 @@ public final class RdPidXmlParser {
             return m;
         }
 
+        /**
+         * Builds the exact 12-field {@code biometricData} map required by InstantPay's
+         * {@code POST /fi/remit/out/domestic/v2/remitterKyc} specification
+         * (note uppercase {@code "Skey"}, {@code "ts"}, and {@code "srno"}).
+         */
+        public Map<String, String> toInstantPayRemitterKycBiometricData() {
+            Map<String, String> m = new LinkedHashMap<>();
+            m.put("ci", ci);
+            m.put("hmac", hmac);
+            m.put("pidData", pidData);
+            m.put("ts", ts);
+            m.put("dc", dc);
+            m.put("mi", mi);
+            m.put("dpId", dpId);
+            m.put("mc", mc);
+            m.put("rdsId", rdsId);
+            m.put("rdsVer", rdsVer);
+            m.put("Skey", sessionKey);
+            m.put("srno", srno);
+            return m;
+        }
+
         private static int parseIntSafe(String raw, int fallback) {
             if (raw == null || raw.isBlank()) return fallback;
             try {

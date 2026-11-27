@@ -255,6 +255,100 @@ public class InstantPayClient {
             Map<String, Object> raw
     ) {}
 
+    public record DmtBankItemResponse(
+            String bankId,
+            String name,
+            String ifscAlias,
+            String ifscGlobal,
+            boolean impsEnabled,
+            boolean neftEnabled,
+            Integer impsFailureRate,
+            Integer neftFailureRate
+    ) {}
+
+    public record DmtBankListResponse(
+            boolean success,
+            String statusCode,
+            String message,
+            List<DmtBankItemResponse> banks,
+            Map<String, Object> raw
+    ) {}
+
+    public record DmtBeneficiaryData(
+            String id,
+            String name,
+            String account,
+            String ifsc,
+            String bank,
+            String beneficiaryMobileNumber,
+            String verificationDt
+    ) {}
+
+    public record DmtRemitterProfileResponse(
+            String statusCode,
+            String actCode,
+            String message,
+            String mobileNumber,
+            String firstName,
+            String lastName,
+            String city,
+            String pincode,
+            BigDecimal limitPerTransaction,
+            BigDecimal maximumDailyLimit,
+            BigDecimal availableDailyLimit,
+            BigDecimal maximumMonthlyLimit,
+            BigDecimal availableMonthlyLimit,
+            boolean isTxnOtpRequired,
+            boolean isTxnBioAuthRequired,
+            boolean isImpsAllowed,
+            boolean isNeftAllowed,
+            boolean isFaceAuthAvailable,
+            String validity,
+            String referenceKey,
+            String pidOptionWadh,
+            List<DmtBeneficiaryData> beneficiaries,
+            Map<String, Object> raw
+    ) {}
+
+    public record DmtChallengeResponse(
+            boolean networkError,
+            String statusCode,
+            String actCode,
+            String message,
+            String referenceKey,
+            String beneficiaryId,
+            String validity,
+            String orderId,
+            Map<String, Object> data,
+            Map<String, Object> raw
+    ) {}
+
+    public record DmtTxnPayRequest(
+            String remitterMobileNumber,
+            String accountNumber,
+            String ifsc,
+            String transferMode,
+            String transferAmount,
+            String latitude,
+            String longitude,
+            String referenceKey,
+            String otp,
+            String externalRef
+    ) {}
+
+    public record DmtTxnResponse(
+            boolean networkError,
+            String statusCode,
+            String actCode,
+            String message,
+            String orderId,
+            String poolReferenceId,
+            String txnReferenceId,
+            String txnValue,
+            String poolAmount,
+            Map<String, Object> raw
+    ) {}
+
     private final InstantPayProperties props;
     private final ObjectMapper mapper;
     private final InstantPayAuditLogService auditLog;
@@ -923,6 +1017,312 @@ public class InstantPayClient {
         return new TxnStatusResponse(outcome, statusCode, txnStatusCode, txnStatusMsg, txnId, utr, res.parsed);
     }
 
+    // =========================================================================
+    // InstantPay Domestic Money Transfer (DMT v2: /fi/remit/out/domestic/v2/*)
+    // =========================================================================
+
+    public DmtBankListResponse listDmtBanks(String outletId) {
+        String headerOutlet = (outletId != null && !outletId.isBlank()) ? outletId.trim() : null;
+        RawCall res = execute("POST", "/fi/remit/out/domestic/v2/banks", headerOutlet, "\"\"", Duration.ofSeconds(30), "DMT_BANKS", null);
+        String statusCode = str(res.parsed.get("statuscode"));
+        String message = str(res.parsed.get("status"));
+        List<DmtBankItemResponse> banks = new ArrayList<>();
+        Object dataObj = res.parsed.get("data");
+        if (dataObj instanceof List<?> list) {
+            for (Object elem : list) {
+                Map<String, Object> row = asMap(elem);
+                String bankId = str(row.get("bankId"));
+                String name = str(row.get("name"));
+                if (bankId.isEmpty() || name.isEmpty()) {
+                    continue;
+                }
+                String ifscAlias = str(row.get("ifscAlias")).toUpperCase(Locale.ROOT);
+                String ifscGlobal = str(row.get("ifscGlobal")).toUpperCase(Locale.ROOT);
+                boolean imps = !row.containsKey("impsEnabled") || truthy(row.get("impsEnabled"));
+                boolean neft = !row.containsKey("neftEnabled") || truthy(row.get("neftEnabled"));
+                Integer impsFail = parseNullableInt(str(row.get("impsFailureRate")));
+                Integer neftFail = parseNullableInt(str(row.get("neftFailureRate")));
+                banks.add(new DmtBankItemResponse(bankId, name, ifscAlias, ifscGlobal, imps, neft, impsFail, neftFail));
+            }
+        }
+        return new DmtBankListResponse("TXN".equalsIgnoreCase(statusCode) && !banks.isEmpty(), statusCode, message, banks, res.parsed);
+    }
+
+    public DmtRemitterProfileResponse fetchDmtRemitterProfile(
+            String outletId,
+            String mobileNumber,
+            String txnMode,
+            String iftEnable) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("mobileNumber", normalizeMobile10(mobileNumber));
+        body.put("txnMode", nonBlank(txnMode, "ALL").toUpperCase(Locale.ROOT));
+        body.put("iftEnable", nonBlank(iftEnable, "YES").toUpperCase(Locale.ROOT));
+
+        RawCall res = execute("POST", "/fi/remit/out/domestic/v2/remitterProfile", outletId, body, Duration.ofSeconds(25), "DMT_REMITTER_PROFILE", null);
+        String statusCode = str(res.parsed.get("statuscode")).toUpperCase(Locale.ROOT);
+        String actCode = str(res.parsed.get("actcode")).toUpperCase(Locale.ROOT);
+        String message = str(res.parsed.get("status"));
+        Map<String, Object> data = asMap(res.parsed.get("data"));
+        Map<String, Object> limitDetails = asMap(data.get("limitDetails"));
+
+        BigDecimal perTxn = parseDecimalOrDefault(str(data.get("limitPerTransaction")), new BigDecimal("5000.00"));
+        BigDecimal totalMax = parseDecimalOrDefault(str(data.get("limitTotal")), new BigDecimal("25000.00"));
+        BigDecimal totalAvail = parseDecimalOrDefault(str(data.get("limitAvailable")), totalMax);
+        BigDecimal dailyMax = parseDecimalOrDefault(str(limitDetails.get("maximumDailyLimit")), totalMax);
+        BigDecimal dailyAvail = parseDecimalOrDefault(str(limitDetails.get("availableDailyLimit")), totalAvail);
+        BigDecimal monthlyMax = parseDecimalOrDefault(str(limitDetails.get("maximumMonthlyLimit")), totalMax);
+        BigDecimal monthlyAvail = parseDecimalOrDefault(str(limitDetails.get("availableMonthlyLimit")), totalAvail);
+
+        List<DmtBeneficiaryData> benes = new ArrayList<>();
+        Object rawBenes = data.get("beneficiaries");
+        if (rawBenes instanceof List<?> list) {
+            for (Object item : list) {
+                Map<String, Object> b = asMap(item);
+                String id = str(b.get("id"));
+                String acc = str(b.get("account"));
+                String ifsc = str(b.get("ifsc")).toUpperCase(Locale.ROOT);
+                if (id.isEmpty() && acc.isEmpty()) {
+                    continue;
+                }
+                benes.add(new DmtBeneficiaryData(
+                        id,
+                        str(b.get("name")),
+                        acc,
+                        ifsc,
+                        str(b.get("bank")),
+                        normalizeMobile10(str(b.get("beneficiaryMobileNumber"))),
+                        str(b.get("verificationDt"))));
+            }
+        }
+
+        boolean txnOtpReq = !data.containsKey("isTxnOtpRequired") || truthy(data.get("isTxnOtpRequired"));
+        boolean txnBioReq = truthy(data.get("isTxnBioAuthRequired"));
+        boolean impsOk = !data.containsKey("isImpsAllowed") || truthy(data.get("isImpsAllowed"));
+        boolean neftOk = !data.containsKey("isNeftAllowed") || truthy(data.get("isNeftAllowed"));
+        boolean faceOk = truthy(data.get("isFaceAuthAvailable"));
+
+        return new DmtRemitterProfileResponse(
+                statusCode,
+                actCode,
+                message,
+                firstNonBlank(normalizeMobile10(str(data.get("mobileNumber"))), normalizeMobile10(mobileNumber)),
+                str(data.get("firstName")),
+                str(data.get("lastName")),
+                str(data.get("city")),
+                str(data.get("pincode")),
+                perTxn,
+                dailyMax,
+                dailyAvail,
+                monthlyMax,
+                monthlyAvail,
+                txnOtpReq,
+                txnBioReq,
+                impsOk,
+                neftOk,
+                faceOk,
+                str(data.get("validity")),
+                str(data.get("referenceKey")),
+                str(data.get("pidOptionWadh")),
+                benes,
+                res.parsed);
+    }
+
+    public DmtChallengeResponse registerDmtRemitter(
+            String outletId,
+            String mobileNumber,
+            String plainAadhaar12,
+            String referenceKey) {
+        String encAadhaar = InstantPayCrypto.encryptAadhaar(plainAadhaar12, props.encryptionKey());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("mobileNumber", normalizeMobile10(mobileNumber));
+        body.put("encryptedAadhaar", encAadhaar);
+        body.put("referenceKey", nonBlank(referenceKey, ""));
+
+        RawCall res = execute("POST", "/fi/remit/out/domestic/v2/remitterRegistration", outletId, body, Duration.ofSeconds(30), "DMT_REMITTER_REGISTER", null);
+        return parseDmtChallenge(res);
+    }
+
+    public DmtChallengeResponse verifyDmtRemitterRegistration(
+            String outletId,
+            String mobileNumber,
+            String otp,
+            String referenceKey) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("mobileNumber", normalizeMobile10(mobileNumber));
+        body.put("otp", nonBlank(otp, ""));
+        body.put("referenceKey", nonBlank(referenceKey, ""));
+
+        RawCall res = execute("POST", "/fi/remit/out/domestic/v2/remitterRegistrationVerify", outletId, body, Duration.ofSeconds(25), "DMT_REMITTER_VERIFY", null);
+        return parseDmtChallenge(res);
+    }
+
+    public DmtChallengeResponse submitDmtRemitterKyc(
+            String outletId,
+            String mobileNumber,
+            String referenceKey,
+            String latitude,
+            String longitude,
+            String externalRef,
+            String captureType,
+            Map<String, String> biometricData12) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("mobileNumber", normalizeMobile10(mobileNumber));
+        body.put("referenceKey", nonBlank(referenceKey, ""));
+        body.put("latitude", scale4(latitude, "19.0760"));
+        body.put("longitude", scale4(longitude, "72.8777"));
+        body.put("externalRef", sanitizeAlphanumericRef(externalRef));
+        body.put("consentTaken", "Y");
+        body.put("captureType", nonBlank(captureType, "FINGER").toUpperCase(Locale.ROOT));
+        body.put("biometricData", biometricData12);
+
+        RawCall res = execute("POST", "/fi/remit/out/domestic/v2/remitterKyc", outletId, body, Duration.ofSeconds(50), "DMT_REMITTER_EKYC", externalRef);
+        return parseDmtChallenge(res);
+    }
+
+    public DmtChallengeResponse registerDmtBeneficiary(
+            String outletId,
+            String remitterMobile,
+            String beneficiaryMobile,
+            String accountNumber,
+            String ifsc,
+            String bankId,
+            String name) {
+        String cleanRemitter = normalizeMobile10(remitterMobile);
+        String cleanBeneMobile = normalizeMobile10(beneficiaryMobile);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("beneficiaryMobileNumber", cleanBeneMobile.isEmpty() ? cleanRemitter : cleanBeneMobile);
+        body.put("remitterMobileNumber", cleanRemitter);
+        body.put("accountNumber", nonBlank(accountNumber, ""));
+        body.put("ifsc", nonBlank(ifsc, "").toUpperCase(Locale.ROOT));
+        body.put("bankId", nonBlank(bankId, ""));
+        body.put("name", nonBlank(name, "Beneficiary"));
+
+        RawCall res = execute("POST", "/fi/remit/out/domestic/v2/beneficiaryRegistration", outletId, body, Duration.ofSeconds(30), "DMT_BENE_REGISTER", null);
+        return parseDmtChallenge(res);
+    }
+
+    public DmtChallengeResponse verifyDmtBeneficiaryRegistration(
+            String outletId,
+            String remitterMobile,
+            String beneficiaryId,
+            String otp,
+            String referenceKey) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("remitterMobileNumber", normalizeMobile10(remitterMobile));
+        body.put("otp", nonBlank(otp, ""));
+        body.put("beneficiaryId", nonBlank(beneficiaryId, ""));
+        body.put("referenceKey", nonBlank(referenceKey, ""));
+
+        RawCall res = execute("POST", "/fi/remit/out/domestic/v2/beneficiaryRegistrationVerify", outletId, body, Duration.ofSeconds(25), "DMT_BENE_VERIFY", null);
+        return parseDmtChallenge(res);
+    }
+
+    public DmtChallengeResponse deleteDmtBeneficiary(
+            String outletId,
+            String remitterMobile,
+            String beneficiaryId) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("remitterMobileNumber", normalizeMobile10(remitterMobile));
+        body.put("beneficiaryId", nonBlank(beneficiaryId, ""));
+
+        RawCall res = execute("POST", "/fi/remit/out/domestic/v2/beneficiaryDelete", outletId, body, Duration.ofSeconds(25), "DMT_BENE_DELETE", null);
+        return parseDmtChallenge(res);
+    }
+
+    public DmtChallengeResponse verifyDmtBeneficiaryDeletion(
+            String outletId,
+            String remitterMobile,
+            String beneficiaryId,
+            String otp,
+            String referenceKey) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("remitterMobileNumber", normalizeMobile10(remitterMobile));
+        body.put("beneficiaryId", nonBlank(beneficiaryId, ""));
+        body.put("otp", nonBlank(otp, ""));
+        body.put("referenceKey", nonBlank(referenceKey, ""));
+
+        RawCall res = execute("POST", "/fi/remit/out/domestic/v2/beneficiaryDeleteVerify", outletId, body, Duration.ofSeconds(25), "DMT_BENE_DELETE_VERIFY", null);
+        return parseDmtChallenge(res);
+    }
+
+    public DmtChallengeResponse generateDmtTransactionOtp(
+            String outletId,
+            String remitterMobile,
+            String amount,
+            String referenceKey) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("remitterMobileNumber", normalizeMobile10(remitterMobile));
+        body.put("amount", formatTwoDecimalAmount(amount));
+        body.put("referenceKey", nonBlank(referenceKey, ""));
+
+        RawCall res = execute("POST", "/fi/remit/out/domestic/v2/generateTransactionOtp", outletId, body, Duration.ofSeconds(25), "DMT_TXN_OTP", null);
+        return parseDmtChallenge(res);
+    }
+
+    public DmtTxnResponse executeDmtTransaction(String outletId, DmtTxnPayRequest req) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("remitterMobileNumber", normalizeMobile10(req.remitterMobileNumber()));
+        body.put("accountNumber", nonBlank(req.accountNumber(), ""));
+        body.put("ifsc", nonBlank(req.ifsc(), "").toUpperCase(Locale.ROOT));
+        body.put("transferMode", nonBlank(req.transferMode(), "IMPS").toUpperCase(Locale.ROOT));
+        body.put("transferAmount", formatTwoDecimalAmount(req.transferAmount()));
+        body.put("latitude", scale4(req.latitude(), "19.0760"));
+        body.put("longitude", scale4(req.longitude(), "72.8777"));
+        body.put("referenceKey", nonBlank(req.referenceKey(), ""));
+        body.put("otp", nonBlank(req.otp(), ""));
+        body.put("externalRef", sanitizeAlphanumericRef(req.externalRef()));
+
+        RawCall res = execute("POST", "/fi/remit/out/domestic/v2/transaction", outletId, body, Duration.ofSeconds(55), "DMT_TRANSACTION", req.externalRef());
+        if (res.networkError) {
+            return new DmtTxnResponse(true, "TIMEOUT", "", "Awaiting bank confirmation", "", "", "", "", "", res.parsed);
+        }
+        String statusCode = str(res.parsed.get("statuscode")).toUpperCase(Locale.ROOT);
+        String actCode = str(res.parsed.get("actcode")).toUpperCase(Locale.ROOT);
+        String message = str(res.parsed.get("status"));
+        Map<String, Object> data = asMap(res.parsed.get("data"));
+        Map<String, Object> pool = asMap(data.get("pool"));
+        return new DmtTxnResponse(
+                false,
+                statusCode,
+                actCode,
+                message,
+                str(res.parsed.get("orderid")),
+                str(data.get("poolReferenceId")),
+                str(data.get("txnReferenceId")),
+                str(data.get("txnValue")),
+                str(pool.get("amount")),
+                res.parsed);
+    }
+
+    private DmtChallengeResponse parseDmtChallenge(RawCall res) {
+        String statusCode = str(res.parsed.get("statuscode")).toUpperCase(Locale.ROOT);
+        String actCode = str(res.parsed.get("actcode")).toUpperCase(Locale.ROOT);
+        String message = str(res.parsed.get("status"));
+        Map<String, Object> data = asMap(res.parsed.get("data"));
+        return new DmtChallengeResponse(
+                res.networkError,
+                statusCode,
+                actCode,
+                message,
+                str(data.get("referenceKey")),
+                str(data.get("beneficiaryId")),
+                str(data.get("validity")),
+                str(res.parsed.get("orderid")),
+                data,
+                res.parsed);
+    }
+
+    private static String formatTwoDecimalAmount(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "0.00";
+        }
+        try {
+            return new BigDecimal(raw.trim()).setScale(2, RoundingMode.HALF_UP).toPlainString();
+        } catch (Exception e) {
+            return raw.trim();
+        }
+    }
+
     private record RawCall(int httpStatus, Map<String, Object> parsed, boolean networkError) {}
 
     private RawCall execute(
@@ -961,10 +1361,14 @@ public class InstantPayClient {
         String rawReqBody = "";
         if (!"GET".equalsIgnoreCase(method) && bodyObj != null) {
             reqHeaders.put("Content-Type", "application/json");
-            try {
-                rawReqBody = mapper.writeValueAsString(bodyObj);
-            } catch (Exception e) {
-                rawReqBody = "{}";
+            if (bodyObj instanceof String rawStr) {
+                rawReqBody = rawStr;
+            } else {
+                try {
+                    rawReqBody = mapper.writeValueAsString(bodyObj);
+                } catch (Exception e) {
+                    rawReqBody = "{}";
+                }
             }
         }
 
@@ -994,7 +1398,11 @@ public class InstantPayClient {
                     str(data.get("poolReferenceId")),
                     str(parsed.get("ipay_uuid")));
             String resolvedOutlet = firstNonBlank(outletId, str(data.get("outletId")));
-            boolean upstreamFailed = !"TXN".equalsIgnoreCase(statusCode) && !"OTP".equalsIgnoreCase(statusCode) && !"TUP".equalsIgnoreCase(statusCode);
+            boolean upstreamFailed = !"TXN".equalsIgnoreCase(statusCode)
+                    && !"OTP".equalsIgnoreCase(statusCode)
+                    && !"TUP".equalsIgnoreCase(statusCode)
+                    && !"KYC".equalsIgnoreCase(statusCode)
+                    && !"RNF".equalsIgnoreCase(statusCode);
 
             if (auditLog != null) {
                 auditLog.recordOutboundAsync(new InstantPayAuditLogService.OutboundSnapshot(

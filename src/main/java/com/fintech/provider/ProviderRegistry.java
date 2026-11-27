@@ -2,6 +2,7 @@ package com.fintech.provider;
 
 import com.fintech.platform.web.ApiException;
 import com.fintech.provider.port.AepsPort;
+import com.fintech.provider.port.DmtPort;
 import com.fintech.provider.port.PayoutPort;
 import com.fintech.provider.port.UpiCashoutPort;
 import java.util.List;
@@ -9,6 +10,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
@@ -19,11 +21,22 @@ public class ProviderRegistry {
     private final Map<String, UpiCashoutPort> upi;
     private final Map<String, PayoutPort> payout;
     private final Map<String, AepsPort> aeps;
+    private final Map<String, DmtPort> dmt;
 
     public ProviderRegistry(List<UpiCashoutPort> upi, List<PayoutPort> payout, List<AepsPort> aeps) {
+        this(upi, payout, aeps, List.of());
+    }
+
+    @Autowired
+    public ProviderRegistry(
+            List<UpiCashoutPort> upi,
+            List<PayoutPort> payout,
+            List<AepsPort> aeps,
+            List<DmtPort> dmt) {
         this.upi = index(upi, UpiCashoutPort::providerCode);
         this.payout = index(payout, PayoutPort::providerCode);
         this.aeps = index(aeps, AepsPort::providerCode);
+        this.dmt = index(dmt == null ? List.of() : dmt, DmtPort::providerCode);
     }
 
     public UpiCashoutPort upi(String providerCode) {
@@ -36,6 +49,10 @@ public class ProviderRegistry {
 
     public AepsPort aeps(String providerCode) {
         return require(aeps, providerCode, "AePS");
+    }
+
+    public DmtPort dmt(String providerCode) {
+        return require(dmt, providerCode, "DMT");
     }
 
     private static <T> T require(Map<String, T> ports, String providerCode, String service) {

@@ -49,7 +49,10 @@ public class AdminPlatformController {
 
     public record CommissionRequest(@NotBlank String mode, @NotNull BigDecimal retailer,
                                     @NotNull BigDecimal distributor, @NotNull BigDecimal hub,
-                                    BigDecimal vendorCommission) {}
+                                    BigDecimal vendorCommission,
+                                    String surchargeMode,
+                                    BigDecimal surchargeValue,
+                                    BigDecimal surchargeMin) {}
 
     public record SettingUpdateRequest(@NotBlank String value) {}
 
@@ -216,7 +219,7 @@ public class AdminPlatformController {
     public ApiResponse<Map<String, Object>> saveCommission(@PathVariable String code,
                                                            @Valid @RequestBody CommissionRequest req) {
         return ApiResponse.ok(admin.saveCommission(code, req.mode(), req.retailer(), req.distributor(), req.hub(),
-                req.vendorCommission()));
+                req.vendorCommission(), req.surchargeMode(), req.surchargeValue(), req.surchargeMin()));
     }
 
     @GetMapping("/users")
