@@ -254,10 +254,13 @@ public class InstantPayAuditLogService {
                         UNION
                         SELECT p.external_ref FROM payout_transfers p
                          WHERE p.user_id = ? AND p.external_ref IS NOT NULL
+                        UNION
+                        SELECT a.external_ref FROM aeps_transactions a
+                         WHERE a.user_id = ? AND a.external_ref IS NOT NULL
                     ))
                  ORDER BY l.created_at DESC
                  LIMIT ?
-                """, userId, userId, userId, userId, safeLimit);
+                """, userId, userId, userId, userId, userId, safeLimit);
         return rows.stream().map(this::toView).toList();
     }
 

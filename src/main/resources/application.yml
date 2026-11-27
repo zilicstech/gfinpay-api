@@ -136,6 +136,13 @@ app:
     payout-purpose: ${APP_INSTANTPAY_PAYOUT_PURPOSE:REIMBURSEMENT}
     payout-include-outlet-id: ${APP_INSTANTPAY_PAYOUT_INCLUDE_OUTLET_ID:true}
     webhook-secret: ${APP_INSTANTPAY_WEBHOOK_SECRET:}
+    aeps-bank-cache-minutes: ${APP_INSTANTPAY_AEPS_BANK_CACHE_MINUTES:30}
+  aeps:
+    geofence-enabled: ${APP_AEPS_GEOFENCE_ENABLED:true}
+    max-geofence-km: ${APP_AEPS_MAX_GEOFENCE_KM:3.0}
+    max-biometric-mismatches: ${APP_AEPS_MAX_BIOMETRIC_MISMATCHES:2}
+    mismatch-block-hours: ${APP_AEPS_MISMATCH_BLOCK_HOURS:24}
+    cash-deposit-enabled: ${APP_AEPS_CASH_DEPOSIT_ENABLED:false}
   iserveu:
     enabled: ${APP_ISERVEU_ENABLED:false}
     cashpoint-url: ${APP_ISERVEU_CASHPOINT_URL:${APP_ISERVEU_BASE_URL:}}

@@ -117,6 +117,53 @@ public final class RdPidXmlParser {
             m.put("rdsVer", rdsVer);
             return m;
         }
+
+        /**
+         * Builds the exact 25-field {@code biometricData} map required by InstantPay's AePS endpoints
+         * ({@code /fi/aeps/outletLogin}, {@code cashWithdrawal}, {@code balanceInquiry},
+         * {@code miniStatement}, {@code cashDeposit}), matching InstantPay's production schema.
+         */
+        public Map<String, Object> toInstantPayAepsBiometricData(String aesEncryptedAadhaar, String captureTypeRaw) {
+            String cap = captureTypeRaw == null ? "FINGER" : captureTypeRaw.trim().toUpperCase(java.util.Locale.ROOT);
+            boolean iris = "IRIS".equals(cap);
+            boolean face = "FACE".equals(cap);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("encryptedAadhaar", aesEncryptedAadhaar);
+            m.put("dc", dc);
+            m.put("ci", ci);
+            m.put("hmac", hmac);
+            m.put("dpId", dpId);
+            m.put("mc", mc);
+            m.put("pidDataType", pidDataType);
+            m.put("sessionKey", sessionKey);
+            m.put("mi", mi);
+            m.put("rdsId", rdsId);
+            m.put("errCode", errCode);
+            m.put("errInfo", "Success.".equals(errInfo) ? "" : errInfo);
+            m.put("fCount", (iris || face) ? "0" : fCount);
+            m.put("fType", fType);
+            m.put("iCount", iris ? parseIntSafe(iCount, 1) : 0);
+            m.put("iType", iris ? iType : "");
+            m.put("pCount", face ? parseIntSafe(pCount, 1) : 0);
+            m.put("pType", face ? pType : "");
+            m.put("srno", srno);
+            m.put("sysid", sysid);
+            m.put("ts", ts);
+            m.put("pidData", pidData);
+            m.put("qScore", qScore);
+            m.put("nmPoints", nmPoints);
+            m.put("rdsVer", rdsVer);
+            return m;
+        }
+
+        private static int parseIntSafe(String raw, int fallback) {
+            if (raw == null || raw.isBlank()) return fallback;
+            try {
+                return Integer.parseInt(raw.trim());
+            } catch (NumberFormatException e) {
+                return fallback;
+            }
+        }
     }
 
     private RdPidXmlParser() {}

@@ -2,10 +2,12 @@ package com.fintech.biometric;
 
 import com.fintech.emerald.EmeraldClient;
 import com.fintech.emerald.EmeraldMessageSanitizer;
+import com.fintech.emerald.EmeraldProperties;
 import com.fintech.emerald.EmeraldTraceContext;
 import com.fintech.instantpay.InstantPayClient;
 import com.fintech.instantpay.InstantPayCrypto;
 import com.fintech.instantpay.InstantPayProperties;
+import com.fintech.platform.PlatformServiceGate;
 import com.fintech.platform.crypto.FieldCipher;
 import com.fintech.platform.security.AuthPrincipal;
 import com.fintech.platform.web.ApiException;
@@ -46,6 +48,8 @@ public class BiometricActivationService {
     private final JdbcTemplate jdbc;
     private final FieldCipher fieldCipher;
     private final EmeraldClient emeraldClient;
+    private final EmeraldProperties emeraldProps;
+    private final PlatformServiceGate platformServices;
     private final ProviderOnboardingService providerOnboarding;
     private final InstantPayClient instantPayClient;
     private final InstantPayProperties instantPayProps;
@@ -57,6 +61,8 @@ public class BiometricActivationService {
             JdbcTemplate jdbc,
             FieldCipher fieldCipher,
             EmeraldClient emeraldClient,
+            EmeraldProperties emeraldProps,
+            PlatformServiceGate platformServices,
             ProviderOnboardingService providerOnboarding,
             InstantPayClient instantPayClient,
             InstantPayProperties instantPayProps,
@@ -65,6 +71,8 @@ public class BiometricActivationService {
         this.jdbc = jdbc;
         this.fieldCipher = fieldCipher;
         this.emeraldClient = emeraldClient;
+        this.emeraldProps = emeraldProps;
+        this.platformServices = platformServices;
         this.providerOnboarding = providerOnboarding;
         this.instantPayClient = instantPayClient;
         this.instantPayProps = instantPayProps;
@@ -77,9 +85,22 @@ public class BiometricActivationService {
             FieldCipher fieldCipher,
             EmeraldClient emeraldClient,
             ProviderOnboardingService providerOnboarding,
+            InstantPayClient instantPayClient,
+            InstantPayProperties instantPayProps,
             String rdEnv,
             boolean allowPastedPid) {
-        this(jdbc, fieldCipher, emeraldClient, providerOnboarding, null, null, rdEnv, allowPastedPid);
+        this(jdbc, fieldCipher, emeraldClient, null, null, providerOnboarding,
+                instantPayClient, instantPayProps, rdEnv, allowPastedPid);
+    }
+
+    public BiometricActivationService(
+            JdbcTemplate jdbc,
+            FieldCipher fieldCipher,
+            EmeraldClient emeraldClient,
+            ProviderOnboardingService providerOnboarding,
+            String rdEnv,
+            boolean allowPastedPid) {
+        this(jdbc, fieldCipher, emeraldClient, null, null, providerOnboarding, null, null, rdEnv, allowPastedPid);
     }
 
     /**
@@ -112,8 +133,13 @@ public class BiometricActivationService {
         boolean hasFullAadhaar = Boolean.TRUE.equals(kycRow.get("has_full_aadhaar"));
         String aadhaarLast4 = str(kycRow.get("aadhaar_last4"));
 
+        boolean emeraldEnabled = emeraldProps == null || emeraldProps.enabled();
+        boolean upiServiceEnabled = platformServices == null || platformServices.isEnabled(PlatformServiceGate.UPI_CASHOUT);
+        boolean aepsServiceEnabled = platformServices == null || platformServices.isEnabled(PlatformServiceGate.AEPS);
+
         List<Map<String, Object>> activations = jdbc.queryForList("""
-                SELECT a.id, c.channel_key, c.supports_upi_cashout, c.supports_aeps, c.supports_payout,
+                SELECT a.id, c.channel_key, c.provider_code,
+                       c.supports_upi_cashout, c.supports_aeps, c.supports_payout,
                        c.biometric_required,
                        a.onboarding_status, a.kyc_status, a.biometric_verified_at, a.bank_sync_status,
                        a.enabled_for_retailer, c.active AS platform_active, c.priority_order
@@ -124,32 +150,46 @@ public class BiometricActivationService {
                    AND a.enabled_for_retailer = TRUE
                    AND c.active = TRUE
                    AND m.status = 'ACTIVE'
-                 ORDER BY c.priority_order ASC, c.created_at ASC
+                """ + (emeraldEnabled ? "" : " AND c.provider_code <> 'EMERALD' ") + """
+                 ORDER BY COALESCE(a.retailer_priority, 99) ASC, c.priority_order ASC, c.created_at ASC
                 """, userId);
 
         boolean terminalProvisioned = !activations.isEmpty();
+        boolean upiTerminalProvisioned = false;
+        boolean aepsTerminalProvisioned = false;
         boolean anyFullKyc = false;
         boolean anyPendingBiometric = false;
+        boolean upiPendingBiometric = false;
+        boolean aepsPendingBiometric = false;
         boolean upiCashoutActive = false;
         boolean aepsActive = false;
         boolean payoutBankReady = false;
         String defaultPendingChannelKey = null;
+        String upiPendingChannelKey = null;
+        String aepsPendingChannelKey = null;
 
         List<Map<String, Object>> opaqueChannels = new ArrayList<>();
         int index = 1;
         for (Map<String, Object> row : activations) {
             String key = str(row.get("channel_key"));
+            String providerCode = str(row.get("provider_code"));
             String kycStatus = str(row.get("kyc_status"));
             String bankSync = str(row.get("bank_sync_status"));
             boolean biometricNeeded = Boolean.TRUE.equals(row.get("biometric_required"));
+            boolean supportsUpi = Boolean.TRUE.equals(row.get("supports_upi_cashout"));
+            boolean supportsAeps = Boolean.TRUE.equals(row.get("supports_aeps"));
             boolean isFull = "FULL_KYC".equalsIgnoreCase(kycStatus);
             boolean readyWithoutBiometric = !biometricNeeded && "NOT_REQUIRED".equalsIgnoreCase(kycStatus);
+
+            if (supportsUpi) upiTerminalProvisioned = true;
+            if (supportsAeps) aepsTerminalProvisioned = true;
+
             if (isFull) {
                 anyFullKyc = true;
             }
             if (isFull || readyWithoutBiometric) {
-                if (Boolean.TRUE.equals(row.get("supports_upi_cashout"))) upiCashoutActive = true;
-                if (isFull && Boolean.TRUE.equals(row.get("supports_aeps"))) aepsActive = true;
+                if (supportsUpi) upiCashoutActive = true;
+                if (isFull && supportsAeps) aepsActive = true;
                 if (isFull && Boolean.TRUE.equals(row.get("supports_payout")) && "SYNCED".equalsIgnoreCase(bankSync)) {
                     payoutBankReady = true;
                 }
@@ -157,6 +197,14 @@ public class BiometricActivationService {
                 anyPendingBiometric = true;
                 if (defaultPendingChannelKey == null) {
                     defaultPendingChannelKey = key;
+                }
+                if (supportsUpi) {
+                    upiPendingBiometric = true;
+                    if (upiPendingChannelKey == null) upiPendingChannelKey = key;
+                }
+                if (supportsAeps) {
+                    aepsPendingBiometric = true;
+                    if (aepsPendingChannelKey == null) aepsPendingChannelKey = key;
                 }
             }
 
@@ -173,23 +221,33 @@ public class BiometricActivationService {
             index++;
         }
 
+        boolean effectiveUpiActive = servicesUnlocked && upiServiceEnabled && upiCashoutActive;
+        boolean effectiveAepsActive = servicesUnlocked && aepsServiceEnabled && aepsActive;
         boolean cashServicesActive = servicesUnlocked && (anyFullKyc || upiCashoutActive);
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("servicesUnlocked", servicesUnlocked);
         out.put("businessVerified", businessVerified);
         out.put("agreementSigned", agreementSigned);
+        out.put("upiServiceEnabled", upiServiceEnabled);
+        out.put("aepsServiceEnabled", aepsServiceEnabled);
         out.put("terminalProvisioned", terminalProvisioned);
+        out.put("upiTerminalProvisioned", upiTerminalProvisioned);
+        out.put("aepsTerminalProvisioned", aepsTerminalProvisioned);
         out.put("biometricRequired", terminalProvisioned && anyPendingBiometric && !upiCashoutActive && !aepsActive);
+        out.put("upiBiometricRequired", upiTerminalProvisioned && upiPendingBiometric && !upiCashoutActive);
+        out.put("aepsBiometricRequired", aepsTerminalProvisioned && aepsPendingBiometric && !aepsActive);
         out.put("additionalBiometricAvailable", (anyFullKyc || upiCashoutActive) && anyPendingBiometric);
         out.put("biometricVerified", anyFullKyc);
         out.put("cashServicesActive", cashServicesActive);
-        out.put("upiCashoutActive", servicesUnlocked && upiCashoutActive);
-        out.put("aepsActive", servicesUnlocked && aepsActive);
+        out.put("upiCashoutActive", effectiveUpiActive);
+        out.put("aepsActive", effectiveAepsActive);
         out.put("payoutBankReady", servicesUnlocked && payoutBankReady);
         out.put("hasFullAadhaar", hasFullAadhaar);
         out.put("aadhaarLast4", aadhaarLast4);
         out.put("pendingChannelKey", defaultPendingChannelKey);
+        out.put("upiPendingChannelKey", upiPendingChannelKey != null ? upiPendingChannelKey : defaultPendingChannelKey);
+        out.put("aepsPendingChannelKey", aepsPendingChannelKey != null ? aepsPendingChannelKey : defaultPendingChannelKey);
         out.put("rdEnv", rdEnv);
         out.put("allowPastedPid", allowPastedPid);
         out.put("channels", opaqueChannels);

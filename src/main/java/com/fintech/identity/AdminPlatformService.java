@@ -499,6 +499,7 @@ public class AdminPlatformService {
         String code = serviceCode == null ? "" : serviceCode.trim().toUpperCase();
         return switch (code) {
             case "UPI_CASHOUT" -> "CASHOUT_UPI";
+            case "AEPS" -> "CASHOUT_AEPS";
             case "FD_CARD" -> "FD_CARD";
             case "HOSPI_CASH" -> "HOSPI_CASH";
             default -> code;

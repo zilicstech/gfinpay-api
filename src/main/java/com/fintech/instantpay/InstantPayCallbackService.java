@@ -2,6 +2,7 @@ package com.fintech.instantpay;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fintech.aeps.AepsService;
 import com.fintech.cashout.CashoutService;
 import com.fintech.payout.PayoutService;
 import com.fintech.platform.webhook.ProviderCallbackLog;
@@ -17,6 +18,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -45,6 +47,7 @@ public class InstantPayCallbackService {
     private final ProviderCallbackLog callbackLog;
     private final CashoutService cashoutService;
     private final PayoutService payoutService;
+    private final AepsService aepsService;
     private final InstantPayAuditLogService auditLog;
 
     public InstantPayCallbackService(
@@ -55,12 +58,26 @@ public class InstantPayCallbackService {
             CashoutService cashoutService,
             PayoutService payoutService,
             InstantPayAuditLogService auditLog) {
+        this(jdbc, mapper, props, callbackLog, cashoutService, payoutService, null, auditLog);
+    }
+
+    @Autowired
+    public InstantPayCallbackService(
+            JdbcTemplate jdbc,
+            ObjectMapper mapper,
+            InstantPayProperties props,
+            ProviderCallbackLog callbackLog,
+            CashoutService cashoutService,
+            PayoutService payoutService,
+            AepsService aepsService,
+            InstantPayAuditLogService auditLog) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.props = props;
         this.callbackLog = callbackLog;
         this.cashoutService = cashoutService;
         this.payoutService = payoutService;
+        this.aepsService = aepsService;
         this.auditLog = auditLog;
     }
 
@@ -101,8 +118,10 @@ public class InstantPayCallbackService {
         String resMsg = trim(merged.get("res_msg"));
         String txnMode = trim(merged.get("txn_mode")).toUpperCase(Locale.ROOT);
 
-        String flow = "DR".equals(txnMode) ? "WEBHOOK_PAYOUT_DR"
-                : ("CR".equals(txnMode) ? "WEBHOOK_UATM_CR" : "WEBHOOK_CALLBACK");
+        String flow = (agentId.startsWith("AEPS") || existsInAeps(agentId, ipayId))
+                ? "WEBHOOK_AEPS_" + (txnMode.isEmpty() ? "CB" : txnMode)
+                : ("DR".equals(txnMode) ? "WEBHOOK_PAYOUT_DR"
+                        : ("CR".equals(txnMode) ? "WEBHOOK_UATM_CR" : "WEBHOOK_CALLBACK"));
 
         String serializedPayload = serializeCallbackPayload(merged, rawBody);
         JsonNode payloadNode = parseSafe(serializedPayload);
@@ -195,6 +214,23 @@ public class InstantPayCallbackService {
             String resCode,
             String resMsg,
             String txnMode) {
+        boolean isAeps = aepsService != null && (agentId.startsWith("AEPS") || existsInAeps(agentId, ipayId));
+        if (isAeps) {
+            return switch (status) {
+                case "INITIATED", "PENDING" -> null;
+                case "SUCCESS", "PAID", "COMPLETED" -> aepsService.finalizeFromCallback(
+                        agentId, ipayId, "SUCCESS", nonBlank(resMsg, "AePS Transaction Successful"), oprId, null, null);
+                case "FAILED", "DECLINED", "REJECTED" -> aepsService.finalizeFromCallback(
+                        agentId, ipayId, "FAILED", nonBlank(resMsg, "AePS Transaction Failed"), oprId, null, null);
+                case "REFUND", "REVERSED" -> aepsService.finalizeFromCallback(
+                        agentId, ipayId, "REVERSED", nonBlank(resMsg, "AePS Transaction Reversed"), oprId, null, null);
+                default -> {
+                    log.info("INSTANTPAY_CALLBACK aeps unhandled status={} agentId={} ipayId={}", status, agentId, ipayId);
+                    yield null;
+                }
+            };
+        }
+
         boolean isPayout = "DR".equals(txnMode)
                 || agentId.startsWith("PO")
                 || (!"CR".equals(txnMode) && existsInPayouts(agentId, ipayId));
@@ -241,6 +277,20 @@ public class InstantPayCallbackService {
         if (!ipayId.isEmpty()) {
             Integer c = jdbc.queryForObject(
                     "SELECT COUNT(*)::int FROM payout_transfers WHERE provider_txn_id = ?", Integer.class, ipayId);
+            if (c != null && c > 0) return true;
+        }
+        return false;
+    }
+
+    private boolean existsInAeps(String agentId, String ipayId) {
+        if (!agentId.isEmpty()) {
+            Integer c = jdbc.queryForObject(
+                    "SELECT COUNT(*)::int FROM aeps_transactions WHERE external_ref = ?", Integer.class, agentId);
+            if (c != null && c > 0) return true;
+        }
+        if (!ipayId.isEmpty()) {
+            Integer c = jdbc.queryForObject(
+                    "SELECT COUNT(*)::int FROM aeps_transactions WHERE provider_txn_id = ?", Integer.class, ipayId);
             if (c != null && c > 0) return true;
         }
         return false;

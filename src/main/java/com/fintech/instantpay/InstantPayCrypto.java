@@ -26,6 +26,10 @@ public final class InstantPayCrypto {
 
     private InstantPayCrypto() {}
 
+    public static String encrypt(String plainText, String encryptionKey) {
+        return encryptAadhaar(plainText, encryptionKey);
+    }
+
     public static String encryptAadhaar(String plainAadhaar, String encryptionKey) {
         byte[] iv = new byte[IV_LEN];
         RANDOM.nextBytes(iv);

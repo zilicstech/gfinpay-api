@@ -2,6 +2,7 @@ package com.fintech.ledger;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fintech.aeps.AepsService;
 import com.fintech.cashout.CashoutService;
 import com.fintech.dmt.DmtCasaLedger;
 import com.fintech.emerald.EmeraldCallbackService;
@@ -43,6 +44,7 @@ public class TransactionStatusVerificationService {
     private final AdminPlatformService adminService;
     private final CashoutService cashoutService;
     private final PayoutService payoutService;
+    private final AepsService aepsService;
     private final EmeraldCallbackService callbackService;
     private final DmtCasaLedger dmtCasaLedger;
     private final TransactionService transactionService;
@@ -57,6 +59,7 @@ public class TransactionStatusVerificationService {
             AdminPlatformService adminService,
             CashoutService cashoutService,
             PayoutService payoutService,
+            AepsService aepsService,
             EmeraldCallbackService callbackService,
             DmtCasaLedger dmtCasaLedger,
             TransactionService transactionService,
@@ -68,6 +71,7 @@ public class TransactionStatusVerificationService {
         this.adminService = adminService;
         this.cashoutService = cashoutService;
         this.payoutService = payoutService;
+        this.aepsService = aepsService;
         this.callbackService = callbackService;
         this.dmtCasaLedger = dmtCasaLedger;
         this.transactionService = transactionService;
@@ -82,8 +86,24 @@ public class TransactionStatusVerificationService {
             AdminPlatformService adminService,
             CashoutService cashoutService,
             PayoutService payoutService,
+            EmeraldCallbackService callbackService,
+            DmtCasaLedger dmtCasaLedger,
+            TransactionService transactionService,
+            WalletService walletService,
+            LedgerService ledgerService) {
+        this(jdbc, mapper, deskService, adminService, cashoutService, payoutService, null,
+                callbackService, dmtCasaLedger, transactionService, walletService, ledgerService);
+    }
+
+    public TransactionStatusVerificationService(
+            JdbcTemplate jdbc,
+            ObjectMapper mapper,
+            DeskService deskService,
+            AdminPlatformService adminService,
+            CashoutService cashoutService,
+            PayoutService payoutService,
             EmeraldCallbackService callbackService) {
-        this(jdbc, mapper, deskService, adminService, cashoutService, payoutService, callbackService,
+        this(jdbc, mapper, deskService, adminService, cashoutService, payoutService, null, callbackService,
                 null, null, null, null);
     }
 
@@ -189,6 +209,10 @@ public class TransactionStatusVerificationService {
         boolean handledByRail = false;
         if ("PAYOUT".equalsIgnoreCase(txnType)) {
             handledByRail = payoutService.adminResolveByTransactionId(
+                    txnId, confirm ? "SUCCESS" : "REVERSED", cleanRef, cleanReason);
+        } else if (("CASHOUT_AEPS".equalsIgnoreCase(txnType) || "AEPS_DEPOSIT".equalsIgnoreCase(txnType))
+                && aepsService != null) {
+            handledByRail = aepsService.adminResolveByTransactionId(
                     txnId, confirm ? "SUCCESS" : "REVERSED", cleanRef, cleanReason);
         } else if ("DMT".equalsIgnoreCase(txnType) && dmtCasaLedger != null) {
             handledByRail = dmtCasaLedger.adminResolveByTransactionId(txnId, confirm, cleanRef, cleanReason);
@@ -301,6 +325,9 @@ public class TransactionStatusVerificationService {
             cashoutService.reconcileByTransactionId(txnId);
         } else if ("PAYOUT".equalsIgnoreCase(txnType)) {
             payoutService.reconcileByTransactionId(txnId);
+        } else if (("CASHOUT_AEPS".equalsIgnoreCase(txnType) || "AEPS_DEPOSIT".equalsIgnoreCase(txnType))
+                && aepsService != null) {
+            aepsService.reconcileByTransactionId(txnId);
         }
     }
 

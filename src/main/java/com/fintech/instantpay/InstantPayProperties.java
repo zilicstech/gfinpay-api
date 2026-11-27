@@ -25,6 +25,7 @@ public class InstantPayProperties {
     private String payoutPurpose = "REIMBURSEMENT";
     private boolean payoutIncludeOutletId = true;
     private String webhookSecret = "";
+    private int aepsBankCacheMinutes = 30;
 
     public boolean enabled() {
         return enabled;
@@ -209,6 +210,18 @@ public class InstantPayProperties {
 
     public void setWebhookSecret(String webhookSecret) {
         this.webhookSecret = webhookSecret;
+    }
+
+    public int aepsBankCacheMinutes() {
+        return Math.max(1, aepsBankCacheMinutes);
+    }
+
+    public int getAepsBankCacheMinutes() {
+        return aepsBankCacheMinutes;
+    }
+
+    public void setAepsBankCacheMinutes(int aepsBankCacheMinutes) {
+        this.aepsBankCacheMinutes = aepsBankCacheMinutes;
     }
 
     public boolean isConfigured() {

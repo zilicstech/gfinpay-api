@@ -178,6 +178,73 @@ public class InstantPayClient {
             Map<String, Object> raw
     ) {}
 
+    public record AepsBankItem(
+            String bankId,
+            String iin,
+            String name,
+            boolean aepsEnabled,
+            BigDecimal cwOtpMin,
+            Integer failureRatePct
+    ) {}
+
+    public record AepsBankListResponse(
+            boolean success,
+            String statusCode,
+            String message,
+            List<AepsBankItem> banks,
+            Map<String, Object> raw
+    ) {}
+
+    public record AepsOutletLoginResponse(
+            boolean loggedIn,
+            boolean loginRequired,
+            boolean dormantOutlet,
+            String statusCode,
+            String actCode,
+            String message,
+            String aadhaarLastFour,
+            boolean txnBioLoginRequired,
+            boolean faceAuthAvailable,
+            boolean irisAuthAvailable,
+            String providerTxnId,
+            Map<String, Object> raw
+    ) {}
+
+    public record AepsTxnOtpResponse(
+            boolean success,
+            boolean otpRequired,
+            boolean loginRequired,
+            boolean dormantOutlet,
+            String statusCode,
+            String actCode,
+            String message,
+            String referenceKey,
+            String validity,
+            Map<String, Object> raw
+    ) {}
+
+    public record AepsTxnResponse(
+            String outcome,
+            boolean loginRequired,
+            boolean dormantOutlet,
+            boolean biometricMismatch,
+            String statusCode,
+            String actCode,
+            String message,
+            String ipayId,
+            String orderId,
+            String operatorId,
+            String bankName,
+            String accountNumber,
+            String bankAccountBalance,
+            String transactionValue,
+            String payableValue,
+            String transactionMode,
+            Boolean isOnusTxn,
+            List<Map<String, Object>> miniStatement,
+            Map<String, Object> raw
+    ) {}
+
     public record TxnStatusResponse(
             String outcome,
             String statusCode,
@@ -533,6 +600,291 @@ public class InstantPayClient {
         return new PayoutResponse(outcome, statusCode, actCode, message, txnId, utr, res.parsed);
     }
 
+    public AepsBankListResponse listAepsBanks(String outletId) {
+        String headerOutlet = (outletId != null && !outletId.isBlank()) ? outletId.trim() : null;
+        RawCall res = execute("GET", "/fi/aeps/banks", headerOutlet, null, Duration.ofSeconds(25), "AEPS_BANKS", null);
+        String statusCode = str(res.parsed.get("statuscode"));
+        String message = str(res.parsed.get("status"));
+        List<AepsBankItem> items = new ArrayList<>();
+        Object dataObj = res.parsed.get("data");
+        if (dataObj instanceof List<?> list) {
+            for (Object elem : list) {
+                Map<String, Object> row = asMap(elem);
+                String iin = str(row.get("iin")).replaceAll("\\D", "");
+                String name = str(row.get("name"));
+                if (iin.isEmpty() || name.isEmpty()) {
+                    continue;
+                }
+                String bankId = str(row.get("bankId"));
+                boolean enabled = !row.containsKey("aepsEnabled") || truthy(row.get("aepsEnabled"));
+                BigDecimal cwOtpMin = parseDecimalOrDefault(str(row.get("aepsCwOtpMin")), new BigDecimal("5000.01"));
+                Integer failRate = parseNullableInt(str(row.get("aepsFailureRate")));
+                items.add(new AepsBankItem(bankId, iin, name, enabled, cwOtpMin, failRate));
+            }
+        }
+        return new AepsBankListResponse("TXN".equalsIgnoreCase(statusCode) && !items.isEmpty(), statusCode, message, items, res.parsed);
+    }
+
+    public AepsOutletLoginResponse checkAepsOutletLoginStatus(String outletId, String serviceType) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        if (serviceType != null && !serviceType.isBlank()) {
+            body.put("type", serviceType.trim());
+        }
+        RawCall res = execute("POST", "/fi/aeps/outletLoginStatus", outletId, body, Duration.ofSeconds(25), "AEPS_LOGIN_STATUS", null);
+        return parseAepsOutletLoginResponse(res);
+    }
+
+    public AepsOutletLoginResponse submitAepsOutletLogin(
+            String outletId,
+            String loginType,
+            String captureType,
+            String latitude,
+            String longitude,
+            String externalRef,
+            Map<String, Object> biometricData25) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("type", nonBlank(loginType, "DAILY_LOGIN"));
+        body.put("latitude", scale4(latitude, "19.0760"));
+        body.put("longitude", scale4(longitude, "72.8777"));
+        body.put("externalRef", sanitizeAlphanumericRef(externalRef));
+        body.put("captureType", nonBlank(captureType, "FINGER").toUpperCase(Locale.ROOT));
+        body.put("biometricData", biometricData25);
+
+        RawCall res = execute("POST", "/fi/aeps/outletLogin", outletId, body, Duration.ofSeconds(45), "AEPS_OUTLET_LOGIN", externalRef);
+        return parseAepsOutletLoginResponse(res);
+    }
+
+    private AepsOutletLoginResponse parseAepsOutletLoginResponse(RawCall res) {
+        String statusCode = str(res.parsed.get("statuscode")).toUpperCase(Locale.ROOT);
+        String actCode = str(res.parsed.get("actcode")).toUpperCase(Locale.ROOT);
+        String message = str(res.parsed.get("status"));
+        Map<String, Object> data = asMap(res.parsed.get("data"));
+        boolean dormant = "OUI".equalsIgnoreCase(statusCode);
+        boolean loggedIn = "TXN".equalsIgnoreCase(statusCode) && "LOGGEDIN".equalsIgnoreCase(actCode);
+        boolean loginRequired = !loggedIn && ("LOGINREQUIRED".equalsIgnoreCase(actCode)
+                || message.toLowerCase(Locale.ROOT).contains("2fa")
+                || message.toLowerCase(Locale.ROOT).contains("login"));
+        String txnId = firstNonBlank(
+                str(res.parsed.get("orderid")),
+                str(data.get("poolReferenceId")),
+                str(data.get("txnReferenceId")),
+                str(res.parsed.get("ipay_uuid")));
+        return new AepsOutletLoginResponse(
+                loggedIn,
+                loginRequired,
+                dormant,
+                statusCode,
+                actCode,
+                message,
+                str(data.get("aadhaarLastFour")),
+                truthy(data.get("isTxnBioLoginRequired")),
+                truthy(data.get("isFaceAuthAvailable")),
+                truthy(data.get("isIrisAuthAvailable")),
+                txnId,
+                res.parsed);
+    }
+
+    public AepsTxnOtpResponse requestAepsTransactionOtp(
+            String outletId,
+            String bankIin,
+            String plainCustomerAadhaar12,
+            int amountRupees,
+            String mobile,
+            String latitude,
+            String longitude,
+            String externalRef) {
+        String encAadhaar = InstantPayCrypto.encrypt(plainCustomerAadhaar12, props.encryptionKey());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("bankiin", nonBlank(bankIin, ""));
+        body.put("encryptedAadhaar", encAadhaar);
+        body.put("latitude", scale4(latitude, "19.0760"));
+        body.put("longitude", scale4(longitude, "72.8777"));
+        body.put("amount", amountRupees);
+        body.put("mobile", normalizeMobile10(mobile));
+
+        RawCall res = execute("POST", "/fi/aeps/transactionOtp", outletId, body, Duration.ofSeconds(30), "AEPS_TXN_OTP", externalRef);
+        String statusCode = str(res.parsed.get("statuscode")).toUpperCase(Locale.ROOT);
+        String actCode = str(res.parsed.get("actcode")).toUpperCase(Locale.ROOT);
+        String message = str(res.parsed.get("status"));
+        Map<String, Object> data = asMap(res.parsed.get("data"));
+        boolean dormant = "OUI".equalsIgnoreCase(statusCode);
+        boolean loginRequired = "LOGINREQUIRED".equalsIgnoreCase(actCode);
+        boolean offUsOtp = "OTP".equalsIgnoreCase(statusCode);
+        boolean onUsNoOtp = "TXN".equalsIgnoreCase(statusCode) && !loginRequired;
+        return new AepsTxnOtpResponse(
+                offUsOtp || onUsNoOtp,
+                offUsOtp,
+                loginRequired,
+                dormant,
+                statusCode,
+                actCode,
+                message,
+                str(data.get("referenceKey")),
+                str(data.get("validity")),
+                res.parsed);
+    }
+
+    public AepsTxnResponse aepsCashWithdrawal(
+            String outletId,
+            String bankIin,
+            String mobile,
+            String amount,
+            String externalRef,
+            String referenceKey,
+            String captureType,
+            String latitude,
+            String longitude,
+            Map<String, Object> biometricData25) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("bankiin", nonBlank(bankIin, ""));
+        body.put("latitude", scale4(latitude, "19.0760"));
+        body.put("longitude", scale4(longitude, "72.8777"));
+        body.put("mobile", normalizeMobile10(mobile));
+        body.put("amount", formatTransferAmount(amount));
+        body.put("externalRef", sanitizeAlphanumericRef(externalRef));
+        body.put("captureType", nonBlank(captureType, "FINGER").toUpperCase(Locale.ROOT));
+        body.put("referenceKey", referenceKey == null ? "" : referenceKey.trim());
+        body.put("biometricData", biometricData25);
+
+        RawCall res = execute("POST", "/fi/aeps/cashWithdrawal", outletId, body, Duration.ofSeconds(50), "AEPS_CASH_WITHDRAWAL", externalRef);
+        return parseAepsTxnResponse(res);
+    }
+
+    public AepsTxnResponse aepsBalanceInquiry(
+            String outletId,
+            String bankIin,
+            String mobile,
+            String externalRef,
+            String captureType,
+            String latitude,
+            String longitude,
+            Map<String, Object> biometricData25) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("bankiin", nonBlank(bankIin, ""));
+        body.put("latitude", scale4(latitude, "19.0760"));
+        body.put("longitude", scale4(longitude, "72.8777"));
+        body.put("mobile", normalizeMobile10(mobile));
+        body.put("externalRef", sanitizeAlphanumericRef(externalRef));
+        body.put("captureType", nonBlank(captureType, "FINGER").toUpperCase(Locale.ROOT));
+        body.put("biometricData", biometricData25);
+
+        RawCall res = execute("POST", "/fi/aeps/balanceInquiry", outletId, body, Duration.ofSeconds(45), "AEPS_BALANCE_INQUIRY", externalRef);
+        return parseAepsTxnResponse(res);
+    }
+
+    public AepsTxnResponse aepsMiniStatement(
+            String outletId,
+            String bankIin,
+            String mobile,
+            String externalRef,
+            String captureType,
+            String latitude,
+            String longitude,
+            Map<String, Object> biometricData25) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("bankiin", nonBlank(bankIin, ""));
+        body.put("latitude", scale4(latitude, "19.0760"));
+        body.put("longitude", scale4(longitude, "72.8777"));
+        body.put("mobile", normalizeMobile10(mobile));
+        body.put("externalRef", sanitizeAlphanumericRef(externalRef));
+        body.put("captureType", nonBlank(captureType, "FINGER").toUpperCase(Locale.ROOT));
+        body.put("biometricData", biometricData25);
+
+        RawCall res = execute("POST", "/fi/aeps/miniStatement", outletId, body, Duration.ofSeconds(45), "AEPS_MINI_STATEMENT", externalRef);
+        return parseAepsTxnResponse(res);
+    }
+
+    public AepsTxnResponse aepsCashDeposit(
+            String outletId,
+            String bankIin,
+            String mobile,
+            String amount,
+            String externalRef,
+            String captureType,
+            String latitude,
+            String longitude,
+            Map<String, Object> biometricData25) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("bankiin", nonBlank(bankIin, ""));
+        body.put("latitude", scale4(latitude, "19.0760"));
+        body.put("longitude", scale4(longitude, "72.8777"));
+        body.put("mobile", normalizeMobile10(mobile));
+        body.put("amount", formatTransferAmount(amount));
+        body.put("externalRef", sanitizeAlphanumericRef(externalRef));
+        body.put("captureType", nonBlank(captureType, "FINGER").toUpperCase(Locale.ROOT));
+        body.put("biometricData", biometricData25);
+
+        RawCall res = execute("POST", "/fi/aeps/cashDeposit", outletId, body, Duration.ofSeconds(50), "AEPS_CASH_DEPOSIT", externalRef);
+        return parseAepsTxnResponse(res);
+    }
+
+    @SuppressWarnings("unchecked")
+    private AepsTxnResponse parseAepsTxnResponse(RawCall res) {
+        if (res.networkError) {
+            return new AepsTxnResponse(
+                    "PENDING", false, false, false, "TIMEOUT", "", "Awaiting bank confirmation",
+                    "", "", "", "", "", "", "", "", "", null, List.of(), res.parsed);
+        }
+        String statusCode = str(res.parsed.get("statuscode")).toUpperCase(Locale.ROOT);
+        String actCode = str(res.parsed.get("actcode")).toUpperCase(Locale.ROOT);
+        String message = str(res.parsed.get("status"));
+        String lowerMsg = message.toLowerCase(Locale.ROOT);
+        Map<String, Object> data = asMap(res.parsed.get("data"));
+
+        boolean dormant = "OUI".equalsIgnoreCase(statusCode);
+        boolean loginRequired = "LOGINREQUIRED".equalsIgnoreCase(actCode)
+                || (!"TXN".equals(statusCode) && (lowerMsg.contains("2fa") || lowerMsg.contains("outlet login") || lowerMsg.contains("biometric auth")));
+        boolean bioMismatch = !"TXN".equals(statusCode)
+                && ("U3".equalsIgnoreCase(statusCode)
+                || "300".equals(str(res.parsed.get("internalCode")))
+                || lowerMsg.contains("biometric data did not match")
+                || lowerMsg.contains("biometric mismatch")
+                || lowerMsg.contains("fingerprint did not match"));
+
+        String outcome;
+        if ("TXN".equals(statusCode) && !loginRequired) {
+            outcome = "SUCCESS";
+        } else if ("TUP".equals(statusCode) || statusCode.isEmpty()) {
+            outcome = "PENDING";
+        } else {
+            outcome = "FAILED";
+        }
+
+        List<Map<String, Object>> miniList = new ArrayList<>();
+        Object miniRaw = data.get("miniStatement");
+        if (miniRaw instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> m) {
+                    miniList.add((Map<String, Object>) m);
+                }
+            }
+        }
+        Boolean isOnus = data.containsKey("isOnusTxn") && data.get("isOnusTxn") != null
+                ? truthy(data.get("isOnusTxn"))
+                : null;
+
+        return new AepsTxnResponse(
+                outcome,
+                loginRequired,
+                dormant,
+                bioMismatch,
+                statusCode,
+                actCode,
+                message,
+                str(data.get("ipayId")),
+                str(res.parsed.get("orderid")),
+                str(data.get("operatorId")),
+                str(data.get("bankName")),
+                str(data.get("accountNumber")),
+                str(data.get("bankAccountBalance")),
+                str(data.get("transactionValue")),
+                str(data.get("payableValue")),
+                str(data.get("transactionMode")),
+                isOnus,
+                miniList,
+                res.parsed);
+    }
+
     public TxnStatusResponse checkTransactionStatus(String transactionDate, String externalRef) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("transactionDate", nonBlank(transactionDate, ""));
@@ -831,6 +1183,24 @@ public class InstantPayClient {
     private static int parseIntOrDefault(String raw, int fallback) {
         try {
             return Integer.parseInt(raw.trim());
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    private static Integer parseNullableInt(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static BigDecimal parseDecimalOrDefault(String raw, BigDecimal fallback) {
+        if (raw == null || raw.isBlank()) return fallback;
+        try {
+            return new BigDecimal(raw.trim());
         } catch (Exception e) {
             return fallback;
         }

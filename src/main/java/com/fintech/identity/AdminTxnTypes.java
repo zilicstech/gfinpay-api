@@ -17,8 +17,8 @@ public final class AdminTxnTypes {
                     List.of("WALLET_TOPUP", "ADJUSTMENT", "COMMISSION_PAYOUT", "REVERSAL",
                             "FD_CARD_FEE", "FD_ZET", "FD_PAYSPRINT", "FD_GROWMORE")),
             new Group("DMT", "DMT Transactions", List.of("DMT")),
-            new Group("CASHOUT_UPI", "UPI to Cash transactions", List.of("CASHOUT_UPI")),
-            new Group("CASHOUT_AEPS", "Aadhaar cash transactions", List.of("CASHOUT_AEPS")),
+            new Group("CASHOUT_UPI", "UPI Cashpoint transactions", List.of("CASHOUT_UPI")),
+            new Group("CASHOUT_AEPS", "AePS transactions", List.of("CASHOUT_AEPS", "AEPS_DEPOSIT")),
             new Group("PAYOUT", "Payout transactions", List.of("PAYOUT")),
             new Group("BBPS", "Bill pay transactions", List.of("BBPS", "RECHARGE", "DTH", "FASTAG", "LIC")));
 

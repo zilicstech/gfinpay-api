@@ -1,5 +1,7 @@
 package com.fintech.provider.canonical;
 
+import com.fintech.biometric.RdPidXmlParser;
+import java.math.BigDecimal;
 import java.util.Map;
 
 /** Provider-neutral results. Adapters translate vendor payloads into these types. */
@@ -87,6 +89,82 @@ public final class ProviderModels {
             String statusCode,
             String message,
             Map<String, Object> data
+    ) {}
+
+    public record AepsBank(
+            String bankId,
+            String iin,
+            String name,
+            boolean aepsEnabled,
+            BigDecimal cwOtpMin,
+            Integer failureRatePct
+    ) {}
+
+    public record AepsLoginStatus(
+            boolean loggedIn,
+            boolean loginRequired,
+            boolean dormantOutlet,
+            String aadhaarLast4,
+            boolean txnBioLoginRequired,
+            boolean faceAuthAvailable,
+            boolean irisAuthAvailable,
+            String statusCode,
+            String actCode,
+            String message,
+            String providerTxnId
+    ) {}
+
+    public record AepsOutletLoginRequest(
+            String loginType,
+            String captureType,
+            String latitude,
+            String longitude,
+            String externalRef,
+            String merchantAadhaar12,
+            RdPidXmlParser.ParsedPidData pid
+    ) {}
+
+    public record AepsOtpRequest(
+            String bankIin,
+            String customerAadhaar12,
+            String customerMobile,
+            int amountRupees,
+            String latitude,
+            String longitude,
+            String externalRef
+    ) {}
+
+    public record AepsOtpChallenge(
+            boolean success,
+            boolean otpRequired,
+            boolean loginRequired,
+            boolean dormantOutlet,
+            String referenceKey,
+            String validity,
+            String statusCode,
+            String message
+    ) {}
+
+    public record AepsTxnRequest(
+            String aepsType,
+            String bankIin,
+            String customerMobile,
+            BigDecimal amount,
+            String externalRef,
+            String referenceKey,
+            String captureType,
+            String latitude,
+            String longitude,
+            String customerAadhaar12,
+            RdPidXmlParser.ParsedPidData pid
+    ) {}
+
+    public record AepsStatus(
+            Outcome outcome,
+            String statusCode,
+            String message,
+            String rrn,
+            String txnId
     ) {}
 
     public record SettlementEvent(
